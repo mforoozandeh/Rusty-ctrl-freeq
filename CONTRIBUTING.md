@@ -15,6 +15,20 @@ cargo run --release --example timing                # speed, and identical resul
 The Python parity fixtures in `tests/fixtures` are generated from the Python package; see
 `tools/python_reference/README.md`.
 
+The interface is a separate workspace member, so the commands above leave it alone:
+
+```bash
+cargo test -p ctrl-freeq-gui
+cargo clippy -p ctrl-freeq-gui --all-targets -- -D warnings
+cargo clippy -p ctrl-freeq-gui --target wasm32-unknown-unknown -- -D warnings
+cargo run -p ctrl-freeq-gui --release
+trunk serve --config gui/Trunk.toml
+```
+
+A new optimiser, basis or Hamiltonian model appears in the interface without interface changes: its dropdowns
+read `optimizer_names()`, `basis_names()` and `model_names()`.  Only model-specific fields need a line in
+`gui/src/inputs.rs`.
+
 ## Where things live
 
 | Module | What it owns |
@@ -29,6 +43,7 @@ The Python parity fixtures in `tests/fixtures` are generated from the Python pac
 | `optim` | The optimiser interface and the algorithms |
 | `run`, `analysis` | One-call runs, and the data plots need |
 | `parallel` | The only code that knows about threads |
+| `gui/` | The interface: `run.rs` is shared by the native thread and the Web Worker; `runner_*.rs` carry it |
 
 ## Adding an optimiser
 

@@ -61,6 +61,9 @@ the two differ, and why.
   spacing of its time grid, which is slightly larger.
 - **GPU.** `compute_resource: "gpu"` is accepted; the run uses the CPU and says so.  `cpu_cores` sets the number of
   threads.
+- **Cancelling in the browser.** The web interface runs the optimisation in a Web Worker, which can only be stopped
+  by ending it, so a cancelled browser run keeps its convergence history but not its partial pulse.  The desktop
+  interface returns and plots the best pulse so far.  The Python GUI cannot cancel a run.
 
 ## Kept as in Python, worth knowing
 

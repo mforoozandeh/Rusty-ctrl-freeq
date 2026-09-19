@@ -26,13 +26,19 @@ use sampling::{QubitOffsets, coupling_instances, excitation_profile, rabi_instan
 pub type Rng = rand_chacha::ChaCha8Rng;
 
 /// The seed a run of `cfg` uses: the configured one, or one drawn from the clock.
+///
+/// The clock reading is mixed with SplitMix64, so seeds drawn a moment apart - or from a browser clock with
+/// millisecond resolution - still differ in every bit.
 pub fn resolve_seed(cfg: &Config) -> u64 {
     cfg.seed.unwrap_or_else(|| {
         let now = crate::time::SystemTime::now()
             .duration_since(crate::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        (now as u64) ^ ((now >> 64) as u64)
+        let mut z = (now as u64 ^ (now >> 64) as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
     })
 }
 

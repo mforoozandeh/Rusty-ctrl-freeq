@@ -16,3 +16,6 @@ First release of the Rust port of ctrl-freeq 0.3.0.
   reporting, cancellation and a target-fidelity stop.
 - Parallel batch evaluation on rayon, bit-for-bit identical on any number of threads; builds for wasm32.
 - Plot data: pulses, state dynamics and excitation profiles.
+- Interface (`gui/`), native and in the browser: every configuration field, presets, JSON load and save, live
+  convergence, pulse, dynamics and excitation-profile plots, results JSON and waveform CSV export.  The browser
+  build runs the optimisation in a Web Worker.

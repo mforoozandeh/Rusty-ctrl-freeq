@@ -1,0 +1,6 @@
+# Cloudflare Pages reads this file from the root of the published directory; the deploy workflow copies it there.
+# No cross-origin-isolation headers: the optimisation runs in an ordinary Web Worker, not with WebAssembly threads.
+
+# WebAssembly must be served with the right type or streaming compilation is skipped; most hosts get this right.
+/*.wasm
+  Content-Type: application/wasm

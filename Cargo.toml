@@ -17,7 +17,7 @@ exclude = ["/.github", "/.idea", "/deploy", "/docs", "/gui", "/tools", "/tests/f
 # act on the library alone, so its minimum Rust version is not tied to the UI toolkit's.  Build the interface with
 # `cargo run -p ctrl-freeq-gui`.
 [workspace]
-members = []
+members = ["gui"]
 default-members = ["."]
 
 [features]

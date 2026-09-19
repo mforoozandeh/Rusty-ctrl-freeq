@@ -15,7 +15,7 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
@@ -32,7 +32,7 @@ jobs:
     name: fmt, clippy, docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -50,7 +50,7 @@ jobs:
     name: wasm32 library
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -69,7 +69,7 @@ jobs:
       # Only whether it compiles; lint cleanliness is the lint job's business.
       RUSTFLAGS: ''
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: '1.87'
@@ -81,7 +81,7 @@ jobs:
     name: examples converge
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Each example exits non-zero unless it reaches its target fidelity.
@@ -96,3 +96,36 @@ jobs:
       # Fails unless one thread and every thread give identical results.
       - name: Timing and determinism
         run: cargo run --release --example timing
+
+  gui:
+    name: gui, native and web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: System libraries for eframe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - name: Clippy, native
+        run: cargo clippy -p ctrl-freeq-gui --all-targets -- -D warnings
+      - name: Clippy, wasm32
+        run: cargo clippy -p ctrl-freeq-gui --target wasm32-unknown-unknown -- -D warnings
+      - name: Test
+        run: cargo test -p ctrl-freeq-gui --release
+      # A released binary: building Trunk from source would take longer than the rest of the job.
+      - name: Install Trunk
+        run: |
+          curl -sSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C /usr/local/bin trunk
+      - name: Web build
+        run: trunk build --release --config gui/Trunk.toml
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rusty-ctrl-freeq-web
+          path: gui/dist

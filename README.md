@@ -51,6 +51,23 @@ fn main() -> ctrl_freeq::Result<()> {
 The Python package's example configurations are bundled: `ctrl_freeq::config::examples()`.  For a model's default
 setup use `ctrl_freeq::hamiltonian::default_config("superconducting", 2)`.
 
+## The interface
+
+A desktop and browser application edits a configuration, runs it with live convergence, and plots the pulses,
+the state dynamics and the excitation profile.  Configurations load and save in the Python package's JSON format;
+results export as JSON and the waveforms as CSV.
+
+```bash
+cargo run -p ctrl-freeq-gui --release          # desktop
+trunk serve --config gui/Trunk.toml            # browser, at http://127.0.0.1:8080
+trunk build --release --config gui/Trunk.toml  # static files in gui/dist for any web host
+```
+
+In the browser everything runs locally, in a Web Worker, on one thread; nothing is uploaded.  Cancelling there
+keeps the convergence so far but not the partial pulse, because a busy worker can only be stopped by ending it;
+natively, a cancelled run returns and plots its best pulse.  Pushes to `main` publish the site to Cloudflare Pages;
+see [deploy/README.md](deploy/README.md).
+
 ## Examples
 
 ```bash

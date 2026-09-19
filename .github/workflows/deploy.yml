@@ -1,0 +1,63 @@
+name: Deploy the web application
+
+# Building on the host is a trap: Cloudflare Pages' build image has no Rust toolchain.  So the build happens here and
+# only the output is pushed.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      # A released binary: building Trunk from source would take longer than the rest of the job.
+      - name: Install Trunk
+        run: |
+          curl -sSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C /usr/local/bin trunk
+      - name: Build
+        run: trunk build --release --config gui/Trunk.toml
+      # Cloudflare Pages reads `_headers` from the root of the published directory.
+      - name: Add the host's header file
+        run: cp deploy/_headers gui/dist/_headers
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rusty-ctrl-freeq-site
+          path: gui/dist
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    # Everything host-specific is in this job.  It needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID in the
+    # repository secrets; without them it skips the upload rather than failing the workflow.
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: rusty-ctrl-freeq-site
+          path: dist
+      - name: Publish
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # The Pages project name, which also fixes the default address: https://<PROJECT>.pages.dev
+          PROJECT: rusty-ctrl-freeq
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "No deployment credentials configured; the build is attached to this run as an artifact."
+            exit 0
+          fi
+          # `pages deploy` cannot create a project without a terminal to ask in, so make sure one exists first.
+          # Creating an existing project is an error, which is what the `||` swallows.
+          npx --yes wrangler@3 pages project create "$PROJECT" --production-branch main 2>/dev/null || true
+          npx --yes wrangler@3 pages deploy dist --project-name "$PROJECT" --branch main
