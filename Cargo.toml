@@ -8,10 +8,11 @@ license = "Apache-2.0"
 authors = ["Mohammadali Foroozandeh"]
 readme = "README.md"
 repository = "https://github.com/mforoozandeh/Rusty-ctrl-freeq"
+homepage = "https://rusty-ctrl-freeq.pages.dev"
 documentation = "https://docs.rs/ctrl-freeq"
 keywords = ["optimal-control", "quantum", "pulse-design", "autodiff", "qubits"]
 categories = ["science", "mathematics", "simulation"]
-exclude = ["/.github", "/.idea", "/deploy", "/docs", "/gui", "/tools", "/tests/fixtures"]
+exclude = ["/.github", "/.idea", "/deploy", "/docs", "/gui", "/tools", "/rustfmt.toml"]
 
 # The GUI is a workspace member but not a default one: `cargo build`, `cargo test` and `cargo clippy` at the root
 # act on the library alone, so its minimum Rust version is not tied to the UI toolkit's.  Build the interface with
