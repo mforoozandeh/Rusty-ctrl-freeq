@@ -1,6 +1,6 @@
 //! The cost as a graph on the autodiff tape.
 
-use crate::autodiff::{Scalar, Tape, Value, Var};
+use crate::autodiff::{Scalar, Step, Tape, Value, Var};
 use crate::config::WaveformMode;
 use crate::error::Result;
 use crate::hamiltonian::Source;
@@ -116,6 +116,10 @@ fn element_fidelity<'a, T: Scalar>(
 ) -> Result<Var> {
     let u = controls(p, e, tape, cx, cy)?;
     let mut state = tape.constant(Value::C(CMat::<T>::lift(&e.initial)));
+    // Strang splitting: half a dissipation step at each end of the pulse, whole ones between the unitary steps.
+    if let Evolution::Lindblad(ops) = &p.evolution {
+        state = tape.lindblad_step(state, ops, Step::Half)?;
+    }
     for t in 0..p.n_pulse {
         let h = tape.lincomb_row(&e.h0, u, t, &p.control_ops)?;
         let step = tape.expm_mi_dt(h, p.dt)?;
@@ -124,7 +128,8 @@ fn element_fidelity<'a, T: Scalar>(
             Evolution::Liouville => tape.sandwich(step, state)?,
             Evolution::Lindblad(ops) => {
                 let rho = tape.sandwich(step, state)?;
-                tape.lindblad_step(rho, ops)?
+                let part = if t + 1 == p.n_pulse { Step::Half } else { Step::Full };
+                tape.lindblad_step(rho, ops, part)?
             }
         };
     }

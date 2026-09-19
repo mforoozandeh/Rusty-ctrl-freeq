@@ -64,7 +64,9 @@ struct Departures {
     transmon: bool,
     /// A carrier offset: waveform samples at the middle of each step, not on Python's slightly wider grid.
     carrier: bool,
-    /// Relaxation: the dissipator's exact channel instead of an Euler step, which differs by O(dt/T1).
+    /// Relaxation: the dissipator's exact channel in Strang splitting, where Python takes an explicit Euler step.
+    /// On the dissipative problem Python's scheme is 6.4e-4 out in fidelity - 0.298505 against 0.299143 for the
+    /// unsplit propagation - and Rust's is 1.5e-5 out, so the two agree only to a few 1e-3.
     relaxation: bool,
 }
 
@@ -150,7 +152,7 @@ fn setup_and_objective_match_python() {
             continue;
         }
         let (rel, grel) = match (departs.relaxation, liouville) {
-            (true, _) => (1e-3, 1e-3),
+            (true, _) => (5e-3, 5e-3),
             (false, true) => (1e-7, 1e-5),
             (false, false) => (1e-10, 1e-8),
         };

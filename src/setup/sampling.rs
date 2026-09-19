@@ -75,6 +75,10 @@ pub(crate) fn sample_offsets(q: &QubitOffsets, m: usize, rng: &mut Rng) -> Vec<f
 }
 
 /// The excitation profile at `offsets`: where, and how strongly, the target applies.
+///
+/// For `band_selective` it is a super-Gaussian of order `profile_order` whose full width at half maximum is the
+/// pulse bandwidth.  That is the profile the target rotation angle is scaled by, not the excitation the optimised
+/// pulse achieves.
 pub(crate) fn excitation_profile(q: &QubitOffsets, offsets: &[f64]) -> Vec<f64> {
     match q.coverage {
         Coverage::Broadband | Coverage::Single => vec![1.0; offsets.len()],
@@ -88,11 +92,16 @@ pub(crate) fn excitation_profile(q: &QubitOffsets, offsets: &[f64]) -> Vec<f64> 
                 }
             })
             .collect(),
+        // A super-Gaussian of order p whose full width at half maximum is the bandwidth, for every order:
+        // exp(−ln2·(2|o − Δ|/bw)^(2p)) is 1 at the centre and ½ at Δ ± bw/2.
         Coverage::BandSelective => {
-            let s = q.bandwidth / (2.0 * (2.0 * 2f64.ln()).sqrt());
+            let half_width = q.bandwidth / 2.0;
             offsets
                 .iter()
-                .map(|&o| (-((o - q.delta) / s).powi(2 * q.profile_order as i32)).exp())
+                .map(|&o| {
+                    let x = ((o - q.delta) / half_width).abs();
+                    (-2f64.ln() * x.powi(2 * q.profile_order as i32)).exp()
+                })
                 .collect()
         }
     }
@@ -153,6 +162,23 @@ mod tests {
         let p = excitation_profile(&q, &[10.0, 11.0, 13.0]);
         assert_eq!(p[0], 1.0);
         assert!(p[1] < 1.0 && p[2] < p[1]);
+    }
+
+    /// `pulse_bandwidth` is the profile's full width at half maximum, for every super-Gaussian order.
+    #[test]
+    fn the_band_selective_profile_is_half_at_the_band_edge() {
+        for order in [1, 2, 3, 7] {
+            let q = QubitOffsets {
+                profile_order: order,
+                ..offsets(Coverage::BandSelective)
+            };
+            let (centre, edge) = (q.delta, q.bandwidth / 2.0);
+            let p = excitation_profile(&q, &[centre, centre - edge, centre + edge, centre + 2.0 * edge]);
+            assert!((p[0] - 1.0).abs() < 1e-15, "order {order} centre");
+            assert!((p[1] - 0.5).abs() < 1e-12, "order {order} lower edge: {}", p[1]);
+            assert!((p[2] - 0.5).abs() < 1e-12, "order {order} upper edge: {}", p[2]);
+            assert!(p[3] < 0.5, "order {order} beyond the band");
+        }
     }
 
     #[test]

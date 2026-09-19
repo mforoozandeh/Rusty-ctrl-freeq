@@ -16,7 +16,7 @@ mod scalar;
 mod tape;
 
 pub use dual::Dual;
-pub use ops_complex::LindbladOps;
+pub use ops_complex::{LindbladOps, Step};
 pub use scalar::{C, Scalar};
 pub use tape::{Grads, Tape, Value, Var};
 

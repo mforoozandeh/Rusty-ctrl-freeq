@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::autodiff::C;
+use crate::autodiff::{C, Step};
 use crate::config::{Config, Space};
 use crate::error::Result;
 use crate::hamiltonian::Source;
@@ -72,6 +72,14 @@ pub struct Dynamics {
     pub observables_min: Vec<[Vec<f64>; 3]>,
     /// Per qubit, the largest value of each observable over the batch snapshots, over time.
     pub observables_max: Vec<[Vec<f64>; 3]>,
+    /// Population outside the computational subspace over time, under the mean drift: `1 − Tr(P·ρ)`.  Zero
+    /// throughout for models without room to leak.  Total, not a sum over qubits, which would count leakage from
+    /// two qubits at once twice.
+    pub leakage: Vec<f64>,
+    /// The smallest leakage over the batch snapshots, over time.
+    pub leakage_min: Vec<f64>,
+    /// The largest leakage over the batch snapshots, over time.
+    pub leakage_max: Vec<f64>,
 }
 
 /// Where the pulse acts: the final state's observables as the offsets are swept.
@@ -153,7 +161,13 @@ fn trajectory(p: &Problem, h0: &CMat<f64>, u: &[Vec<f64>], initial: &CMat<f64>) 
         state = match &p.evolution {
             Evolution::Hilbert => step.matmul(&state)?,
             Evolution::Liouville => step.matmul(&state)?.matmul(&step.adjoint())?,
-            Evolution::Lindblad(ops) => ops.apply(&step.matmul(&state)?.matmul(&step.adjoint())?, false)?,
+            // Strang splitting, as the objective propagates: half a dissipation step at each end of the step,
+            // which is the same sequence once the halves between steps meet.
+            Evolution::Lindblad(ops) => {
+                let entering = ops.apply(&state, Step::Half, false)?;
+                let turned = step.matmul(&entering)?.matmul(&step.adjoint())?;
+                ops.apply(&turned, Step::Half, false)?
+            }
         };
         out.push(state.clone());
     }
@@ -203,6 +217,11 @@ fn pick(traj: &[CMat<f64>], idx: &[(usize, usize)]) -> Vec<Vec<[f64; 2]>> {
         .collect()
 }
 
+/// Population outside the computational subspace at each step: `1 − Tr(P·ρ)`, or `1 − ‖P·ψ‖²`.
+fn leakage_over(projector: &CMat<f64>, traj: &[CMat<f64>]) -> Vec<f64> {
+    traj.iter().map(|s| 1.0 - expectation(projector, s)).collect()
+}
+
 fn observables_over(p: &Problem, traj: &[CMat<f64>]) -> Vec<[Vec<f64>; 3]> {
     p.observables
         .iter()
@@ -231,6 +250,21 @@ fn dynamics(p: &Problem, w: &Waveforms, mean_drift: &CMat<f64>, i: usize) -> Res
     .collect::<Result<Vec<_>>>()?;
 
     let per_snapshot: Vec<Vec<[Vec<f64>; 3]>> = trajectories.iter().map(|t| observables_over(p, t)).collect();
+    // The computational subspace's projector, `P·P†`, which is the identity where there is nowhere to leak.
+    let projector = p.model.embed_density(&CMat::identity(1 << p.n_qubits))?;
+    let leaks: Vec<Vec<f64>> = trajectories.iter().map(|t| leakage_over(&projector, t)).collect();
+    let leak_fold = |pick_min: bool| -> Vec<f64> {
+        (0..=p.n_pulse)
+            .map(|t| {
+                let vals = leaks.iter().map(|l| l[t]);
+                if pick_min {
+                    vals.fold(f64::INFINITY, f64::min)
+                } else {
+                    vals.fold(f64::NEG_INFINITY, f64::max)
+                }
+            })
+            .collect()
+    };
     let fold = |pick_min: bool| -> Vec<[Vec<f64>; 3]> {
         (0..p.n_qubits)
             .map(|q| {
@@ -258,6 +292,9 @@ fn dynamics(p: &Problem, w: &Waveforms, mean_drift: &CMat<f64>, i: usize) -> Res
         observables: observables_over(p, &mean_traj),
         observables_min: fold(true),
         observables_max: fold(false),
+        leakage: leakage_over(&projector, &mean_traj),
+        leakage_min: leak_fold(true),
+        leakage_max: leak_fold(false),
     })
 }
 
@@ -311,6 +348,7 @@ mod tests {
             exit: Exit::Converged,
             elapsed_s: 0.0,
             notices: vec![],
+            peak_amplitude: vec![],
         }
     }
 
@@ -383,6 +421,34 @@ mod tests {
         assert_eq!(d.mean[0][0], [1.0, 0.0]);
     }
 
+    /// Leakage is the population outside the computational subspace: for one three-level transmon, `|ψ₃|²`.
+    #[test]
+    fn leakage_is_the_population_outside_the_computational_subspace() {
+        let cfg = crate::hamiltonian::default_config("duffing_transmon", 1).unwrap();
+        let p = Problem::build_with_seed(&cfg, 3).unwrap();
+        let a = analyse(&cfg, &result_for(p.x0.clone())).unwrap();
+        let d = &a.dynamics[0];
+        assert_eq!(d.leakage.len(), a.state_times_ns.len());
+        assert_eq!(d.leakage[0], 0.0, "the initial state is in the subspace");
+        for (t, &l) in d.leakage.iter().enumerate() {
+            let third = d.mean[2][t][0].powi(2) + d.mean[2][t][1].powi(2);
+            assert!((l - third).abs() < 1e-12, "t {t}: {l} vs {third}");
+            assert!((0.0..=1.0).contains(&l));
+            assert!(d.leakage_min[t] <= d.leakage_max[t] && d.leakage_min[t] >= 0.0);
+        }
+        assert!(d.leakage.iter().any(|&l| l > 1e-9), "a transmon drive leaks something");
+    }
+
+    /// Two-level models have nowhere to leak to.
+    #[test]
+    fn two_level_models_report_no_leakage() {
+        let cfg = single();
+        let n = Problem::build_with_seed(&cfg, 3).unwrap().n_params();
+        let a = analyse(&cfg, &result_for(vec![0.3; n])).unwrap();
+        let worst = a.dynamics[0].leakage.iter().fold(0.0f64, |m, l| m.max(l.abs()));
+        assert!(worst < 1e-12, "{worst}");
+    }
+
     /// A gate run still plots the configured initial state, under every snapshot.
     #[test]
     fn gate_runs_plot_the_configured_initial_states() {
@@ -395,6 +461,28 @@ mod tests {
         assert_eq!((d.mean.len(), d.snapshots.len()), (4, 3));
         // |Z, −Z> = |01>: ψ2 = 1 before the pulse, in every snapshot.
         assert!(d.snapshots.iter().all(|s| s[1][0] == [1.0, 0.0]));
+    }
+
+    /// The dissipative dynamics plot ends where the objective measures its fidelity.
+    #[test]
+    fn the_last_dissipative_state_matches_the_objective() {
+        let mut cfg =
+            Config::from_json(examples().iter().find(|e| e.0 == "single_qubit_dissipative").unwrap().1).unwrap();
+        cfg.parameters.coverage = vec![crate::config::Coverage::Single];
+        let problem = Problem::build_with_seed(&cfg, 3).unwrap();
+        let x = problem.x0.clone();
+        let target = problem.batch[0].target.clone();
+        let model = CostModel::new(problem);
+        let fid = model.value(&x).unwrap().fidelity;
+        let a = analyse(&cfg, &result_for(x)).unwrap();
+        let d = &a.dynamics[0];
+        // Two levels, so the plot keeps the whole density matrix: ρ11, ρ12, ρ21, ρ22 in order.
+        let rho = CMat::from_fn(2, 2, |r, c| {
+            let last = d.mean[r * 2 + c].last().unwrap();
+            C::new(last[0], last[1])
+        });
+        let got = target.matmul(&rho).unwrap().trace().re;
+        assert!((got - fid).abs() < 1e-12, "{got} vs {fid}");
     }
 
     #[test]

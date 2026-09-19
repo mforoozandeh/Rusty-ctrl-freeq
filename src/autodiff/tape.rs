@@ -10,7 +10,7 @@
 //! Constants an operation needs - basis matrices, control operators, targets - are borrowed for the tape's lifetime
 //! `'a` rather than copied, because the propagation records several hundred nodes per batch element per evaluation.
 
-use super::ops_complex::LindbladOps;
+use super::ops_complex::{LindbladOps, Step};
 use super::{C, Scalar};
 use crate::error::{Error, Result};
 use crate::linalg::{CMat, RMat};
@@ -99,7 +99,7 @@ pub(crate) enum Op<'a, T> {
     ExpmMiDt(Var, f64),
     Matmul(Var, Var),
     Sandwich(Var, Var),
-    Lindblad(Var, &'a LindbladOps),
+    Lindblad(Var, &'a LindbladOps, Step),
     Fidelity(&'a CMat<f64>, Var),
     ReTraceProduct(&'a CMat<f64>, Var),
     BatchMean(Vec<Var>, Vec<Value<T>>),
@@ -292,7 +292,7 @@ impl<'a, T: Scalar> Tape<'a, T> {
             Op::ExpmMiDt(h, dt) => vec![(*h, oc::expm_mi_dt_adjoint(v(*h), *dt, g)?)],
             Op::Matmul(a, b) => oc::matmul_adjoint(*a, *b, v(*a), v(*b), g)?,
             Op::Sandwich(u, rho) => oc::sandwich_adjoint(*u, *rho, v(*u), v(*rho), g)?,
-            Op::Lindblad(rho, ops) => vec![(*rho, oc::lindblad_adjoint(ops, g)?)],
+            Op::Lindblad(rho, ops, step) => vec![(*rho, oc::lindblad_adjoint(ops, *step, g)?)],
             Op::Fidelity(t, psi) => vec![(*psi, oc::fidelity_adjoint(t, v(*psi), g)?)],
             Op::ReTraceProduct(sigma, rho) => vec![(*rho, oc::re_trace_product_adjoint(sigma, g)?)],
             Op::BatchMean(inputs, stored) => {

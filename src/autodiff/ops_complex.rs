@@ -7,17 +7,28 @@ use super::{C, Scalar};
 use crate::error::{Error, Result};
 use crate::linalg::{CMat, RMat, expm, expm_frechet_adjoint, expm_mi_dt};
 
+/// Which part of a time step a dissipation channel covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// `exp(dt·D)`, between two unitary steps.
+    Full,
+    /// `exp(dt·D/2)`, at either end of the pulse.
+    Half,
+}
+
 /// The dissipative half of a Lindblad time step: the channel `exp(dt·D)`, with
-/// `D[ρ] = Σ_k (L_k ρ L_k† − ½{L_k†L_k, ρ})` for the collapse operators `L_k`.
+/// `D[ρ] = Σ_k (L_k ρ L_k† − ½{L_k†L_k, ρ})` for the collapse operators `L_k`, and its half-step counterpart.
 ///
-/// The channel is exact, so every step is completely positive and trace preserving: states stay physical and
-/// fidelities at most 1 however long the step is compared with T1 and T2.  Alternating it with the unitary step is
-/// first-order (Lie-Trotter) splitting in `dt`, the order of the explicit Euler step it replaces.
+/// Both channels are exact, so every step is completely positive and trace preserving: states stay physical and
+/// fidelities at most 1 however long the step is compared with T1 and T2.  Half a channel at each end of the pulse
+/// with whole ones between the unitary steps is Strang splitting, second order in `dt`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LindbladOps {
     dim: usize,
     /// The non-zero entries `(to, from, value)` of `exp(dt·D)` acting on the row-major `vec(ρ)`.
     channel: Vec<(usize, usize, C<f64>)>,
+    /// The same for `exp(dt·D/2)`.
+    half_channel: Vec<(usize, usize, C<f64>)>,
 }
 
 impl LindbladOps {
@@ -49,17 +60,22 @@ impl LindbladOps {
                 generator.set(to, from, v);
             }
         }
-        let map = expm(&generator)?;
-        let channel = (0..n)
-            .flat_map(|to| (0..n).map(move |from| (to, from)))
-            .map(|(to, from)| (to, from, map.get(to, from)))
-            .filter(|&(_, _, v)| v != C::new(0.0, 0.0))
-            .collect();
-        Ok(LindbladOps { dim, channel })
+        let entries = |map: CMat<f64>| -> Vec<(usize, usize, C<f64>)> {
+            (0..n)
+                .flat_map(|to| (0..n).map(move |from| (to, from)))
+                .map(|(to, from)| (to, from, map.get(to, from)))
+                .filter(|&(_, _, v)| v != C::new(0.0, 0.0))
+                .collect()
+        };
+        Ok(LindbladOps {
+            dim,
+            channel: entries(expm(&generator)?),
+            half_channel: entries(expm(&generator.scale_re(0.5))?),
+        })
     }
 
-    /// The channel applied to `rho`, or its adjoint (the Heisenberg-picture map) when `adjoint` is set.
-    pub fn apply<T: Scalar>(&self, rho: &CMat<T>, adjoint: bool) -> Result<CMat<T>> {
+    /// The channel for `step` applied to `rho`, or its adjoint (the Heisenberg-picture map) when `adjoint` is set.
+    pub fn apply<T: Scalar>(&self, rho: &CMat<T>, step: Step, adjoint: bool) -> Result<CMat<T>> {
         if rho.shape() != (self.dim, self.dim) {
             return Err(Error::Dimension(format!(
                 "a {}x{} density matrix for {}-level collapse operators",
@@ -67,7 +83,11 @@ impl LindbladOps {
             )));
         }
         let mut out = CMat::<T>::zeros(self.dim, self.dim);
-        for &(to, from, v) in &self.channel {
+        let channel = match step {
+            Step::Full => &self.channel,
+            Step::Half => &self.half_channel,
+        };
+        for &(to, from, v) in channel {
             if adjoint {
                 out.data[from] += mulc(v.conj(), rho.data[to]);
             } else {
@@ -177,10 +197,10 @@ impl<'a, T: Scalar> Tape<'a, T> {
         Ok(self.push(Value::C(out), Op::Sandwich(u, rho), &[u, rho]))
     }
 
-    /// One dissipation step, `exp(dt·D)[ρ]`.
-    pub fn lindblad_step(&mut self, rho: Var, ops: &'a LindbladOps) -> Result<Var> {
-        let out = ops.apply(self.value(rho).c("lindblad_step")?, false)?;
-        Ok(self.push(Value::C(out), Op::Lindblad(rho, ops), &[rho]))
+    /// A whole or half dissipation step, `exp(dt·D)[ρ]` or `exp(dt·D/2)[ρ]`.
+    pub fn lindblad_step(&mut self, rho: Var, ops: &'a LindbladOps, step: Step) -> Result<Var> {
+        let out = ops.apply(self.value(rho).c("lindblad_step")?, step, false)?;
+        Ok(self.push(Value::C(out), Op::Lindblad(rho, ops, step), &[rho]))
     }
 
     /// The fidelity of the evolved columns `Ψ` to the target columns `T`, as a `1 × 1` real.
@@ -320,8 +340,8 @@ pub(crate) fn sandwich_adjoint<T: Scalar>(
     Ok(vec![(u, Value::C(grad_u)), (rho, Value::C(grad_rho))])
 }
 
-pub(crate) fn lindblad_adjoint<T: Scalar>(ops: &LindbladOps, g: &Value<T>) -> Result<Value<T>> {
-    Ok(Value::C(ops.apply(g.c("lindblad_step")?, true)?))
+pub(crate) fn lindblad_adjoint<T: Scalar>(ops: &LindbladOps, step: Step, g: &Value<T>) -> Result<Value<T>> {
+    Ok(Value::C(ops.apply(g.c("lindblad_step")?, step, true)?))
 }
 
 pub(crate) fn fidelity_adjoint<T: Scalar>(t: &CMat<f64>, psi: &Value<T>, g: &Value<T>) -> Result<Value<T>> {

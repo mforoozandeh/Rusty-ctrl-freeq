@@ -110,6 +110,18 @@ pub(super) fn validate(cfg: &Config) -> Vec<String> {
                 v.push(format!("qubit {}: pulse_bandwidth must not be negative", q + 1));
             }
         }
+        // The band-selective profile is half its maximum at the band edges, so it needs a width and an order.
+        if p.coverage[q] == Coverage::BandSelective {
+            if !(p.pulse_bandwidth[q] > 0.0 && p.pulse_bandwidth[q].is_finite()) {
+                v.push(format!(
+                    "qubit {}: band_selective coverage needs a positive pulse_bandwidth",
+                    q + 1
+                ));
+            }
+            if p.profile_order[q] == 0 {
+                v.push(format!("qubit {}: profile_order must be at least 1", q + 1));
+            }
+        }
         if p.sw[q].is_nan() || p.sw[q] < 0.0 {
             v.push(format!("qubit {}: sw must not be negative", q + 1));
         }

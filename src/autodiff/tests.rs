@@ -247,7 +247,7 @@ fn liouville_and_lindblad_gradients() {
                     let uu = t.expm_mi_dt(h, 0.3)?;
                     rho = t.sandwich(uu, rho)?;
                     if dissipative {
-                        rho = t.lindblad_step(rho, &lops)?;
+                        rho = t.lindblad_step(rho, &lops, if s == 0 { Step::Half } else { Step::Full })?;
                     }
                 }
                 t.re_trace_product(&sigma, rho)

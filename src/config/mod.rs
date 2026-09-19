@@ -76,11 +76,14 @@ pub struct Parameters {
     pub sw: Vec<f64>,
     /// Carrier offset of the pulse in Hz.
     pub pulse_offset: Vec<f64>,
-    /// Excitation bandwidth in Hz, for the selective coverages.
+    /// Excitation bandwidth in Hz, for the selective coverages: the width of the band for `selective`, and for
+    /// `band_selective` the full width at half maximum of the profile the target rotation angle is scaled by
+    /// (which is not the excitation the optimised pulse achieves).
     pub pulse_bandwidth: Vec<f64>,
     /// Fraction of offsets sampled outside the band, for the selective coverages.
     pub ratio_factor: Vec<f64>,
-    /// Super-Gaussian order of the band-selective profile.
+    /// Super-Gaussian order of the band-selective profile; at least 1.  Higher orders have flatter tops and
+    /// steeper edges, with the same width at half maximum.
     pub profile_order: Vec<u32>,
     /// Number of basis coefficients per qubit, as the user sets it.
     pub n_para: Vec<usize>,

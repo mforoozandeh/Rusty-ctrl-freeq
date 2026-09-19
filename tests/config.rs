@@ -158,3 +158,28 @@ fn band_selective_coverage_needs_rotation_targets() {
     };
     assert!(cfg.validate().is_empty(), "{:?}", cfg.validate());
 }
+
+/// A band-selective profile needs a width to be half of, and an order to be a super-Gaussian of.
+#[test]
+fn band_selective_coverage_needs_a_bandwidth_and_an_order() {
+    let mut cfg = single_qubit();
+    cfg.parameters.coverage = vec![ctrl_freeq::config::Coverage::BandSelective];
+    cfg.target_states = Targets::PhiBeta {
+        phi: vec![vec!["x".into()]],
+        beta: vec![vec![180.0]],
+    };
+    assert!(cfg.validate().is_empty(), "{:?}", cfg.validate());
+    cfg.parameters.profile_order = vec![0];
+    assert!(
+        cfg.validate().iter().any(|p| p.contains("profile_order")),
+        "{:?}",
+        cfg.validate()
+    );
+    cfg.parameters.profile_order = vec![2];
+    cfg.parameters.pulse_bandwidth = vec![0.0];
+    assert!(
+        cfg.validate().iter().any(|p| p.contains("pulse_bandwidth")),
+        "{:?}",
+        cfg.validate()
+    );
+}

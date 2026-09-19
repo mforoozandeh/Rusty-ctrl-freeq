@@ -15,7 +15,15 @@ Physics corrections; each is described in `DEVIATIONS.md`.
   the step boundaries, from the initial state.
 - Changed: `band_selective` coverage requires rotation targets; selective axis targets apply qubit by qubit and
   gates only where every qubit is in its band.
-- Fixed: Lindblad relaxation uses the dissipator's exact channel, so states stay physical and fidelities at most 1.
+- Added: `Dynamics::leakage`, with its spread over the snapshots, and a GUI trace: the population outside the
+  computational subspace over time.
+- Added: `RunResult::peak_amplitude` per qubit, and a notice when a pulse exceeds its maximum Rabi frequency, which
+  is penalised in the cost rather than enforced.
+- Fixed: Lindblad relaxation uses the dissipator's exact channel in Strang splitting, so states stay physical,
+  fidelities are at most 1, and the error is second order in the time step.
+- Changed: `pulse_bandwidth` is the band-selective profile's full width at half maximum, for every super-Gaussian
+  order; it was the width at a quarter of the maximum for order 1, and narrower above.  `band_selective` coverage
+  now needs a positive bandwidth and an order of at least 1.
 - Fixed: gate names are compared canonically, so `CNOT` and `CX` together still ask for the gate.
 - Fixed: a coupling spread with fixed offsets gets every drift snapshot, not one.
 - Fixed: `LindbladOps::new` rejects a negative or non-finite step, which is not a channel.

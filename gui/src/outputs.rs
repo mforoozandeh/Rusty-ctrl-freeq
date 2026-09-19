@@ -1,5 +1,6 @@
 //! The central panel: convergence while a run is going, then the pulses, the dynamics and the excitation profile.
 
+use ctrl_freeq::analysis::Dynamics;
 use ctrl_freeq::optim::IterationReport;
 use eframe::egui::{self, Color32, RichText, Ui};
 use egui_plot::{FilledArea, Legend, Line, Plot, PlotPoints};
@@ -162,6 +163,12 @@ fn initial_state_picker(ui: &mut Ui, view: &mut View, r: &Results) {
     }
 }
 
+/// Whether a leakage plot has anything to show: two-level models sit at zero throughout, while the mean drift can
+/// leak where the sampled snapshots do not, so both it and the snapshots count.
+fn leaks(d: &Dynamics) -> bool {
+    d.leakage.iter().chain(&d.leakage_max).any(|&l| l > 1e-9)
+}
+
 fn dynamics(ui: &mut Ui, view: &mut View, r: &Results) {
     initial_state_picker(ui, view, r);
     let a = &r.analysis;
@@ -187,6 +194,23 @@ fn dynamics(ui: &mut Ui, view: &mut View, r: &Results) {
                     plot.add(band);
                     plot.line(Line::new(*name, series(t, &obs[k])).color(*colour).width(2.0));
                 }
+            });
+    }
+    if leaks(d) {
+        ui.add_space(8.0);
+        ui.label(RichText::new("Population outside the computational subspace.").weak());
+        Plot::new("leakage")
+            .height(PLOT_HEIGHT)
+            .legend(Legend::default())
+            .x_axis_label("t (ns)")
+            .y_axis_label("leakage")
+            .include_y(0.0)
+            .link_axis("dynamics", [true, false])
+            .show(ui, |plot| {
+                let band = FilledArea::new("leakage", t, &d.leakage_min, &d.leakage_max)
+                    .fill_color(Y_COLOUR.gamma_multiply(0.18));
+                plot.add(band);
+                plot.line(Line::new("leakage", series(t, &d.leakage)).color(Y_COLOUR).width(2.0));
             });
     }
     ui.add_space(8.0);
@@ -250,5 +274,33 @@ fn profile(ui: &mut Ui, view: &mut View, r: &Results) {
                     plot.line(Line::new(*name, series(&mhz, &xyz[k])).color(*colour).width(2.0));
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dynamics_with(leakage: Vec<f64>, leakage_max: Vec<f64>) -> Dynamics {
+        Dynamics {
+            initial_state: 0,
+            labels: vec![],
+            mean: vec![],
+            snapshots: vec![],
+            observables: vec![],
+            observables_min: vec![],
+            observables_max: vec![],
+            leakage_min: vec![0.0; leakage.len()],
+            leakage,
+            leakage_max,
+        }
+    }
+
+    /// The mean drift can leak where every sampled snapshot stays put; the plot still belongs on screen.
+    #[test]
+    fn leakage_under_the_mean_drift_alone_is_plotted() {
+        assert!(leaks(&dynamics_with(vec![0.0, 0.003_6], vec![0.0, 5.11e-11])));
+        assert!(leaks(&dynamics_with(vec![0.0, 0.0], vec![0.0, 0.002])));
+        assert!(!leaks(&dynamics_with(vec![0.0, 0.0], vec![0.0, 0.0])));
     }
 }

@@ -34,6 +34,25 @@ pub struct RunResult {
     pub elapsed_s: f64,
     /// Things the user should know, such as a request for a GPU this version cannot honour.
     pub notices: Vec<String>,
+    /// Per qubit, the largest amplitude of the optimised pulse as a fraction of that qubit's `Omega_R_max`.
+    /// Anything above 1 asks for more than the configured maximum Rabi frequency: the limit is penalised in the
+    /// cost, not enforced, so a result can exceed it.
+    #[serde(default)]
+    pub peak_amplitude: Vec<f64>,
+}
+
+/// What to tell the user when a pulse asks for more than the maximum Rabi frequency it was given.
+fn amplitude_notice(peaks: &[f64]) -> Option<String> {
+    let (q, &peak) = peaks
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .filter(|&(_, &p)| p > 1.0)?;
+    Some(format!(
+        "The pulse exceeds the maximum Rabi frequency: qubit {}'s amplitude peaks at {peak:.2} of it.  The limit \
+         is penalised in the cost, not enforced.",
+        q + 1
+    ))
 }
 
 /// Number of threads a run uses when the configuration does not set `cpu_cores`.
@@ -90,6 +109,11 @@ pub fn run(cfg: &Config, sink: &mut dyn ProgressSink) -> Result<RunResult> {
         sink: &mut history,
     };
     let result = opt.minimize(&model, &x0, &mut ctl)?;
+    let amp = model.waveforms(&result.x)?.amp;
+    let peak_amplitude: Vec<f64> = (0..amp.cols)
+        .map(|q| (0..amp.rows).fold(0.0f64, |m, t| m.max(amp.get(t, q))))
+        .collect();
+    notices.extend(amplitude_notice(&peak_amplitude));
     Ok(RunResult {
         seed,
         algorithm: opt.name().to_string(),
@@ -102,5 +126,33 @@ pub fn run(cfg: &Config, sink: &mut dyn ProgressSink) -> Result<RunResult> {
         exit: result.exit,
         elapsed_s: started.elapsed().as_secs_f64(),
         notices,
+        peak_amplitude,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::examples;
+    use crate::optim::NoProgress;
+
+    #[test]
+    fn a_run_reports_the_peak_amplitude_of_its_pulse() {
+        let mut cfg = Config::from_json(examples()[0].1).unwrap();
+        cfg.seed = Some(5);
+        cfg.optimization.max_iter = 3;
+        let r = run(&cfg, &mut NoProgress).unwrap();
+        let model = CostModel::new(Problem::build_with_seed(&cfg, r.seed).unwrap());
+        let amp = model.waveforms(&r.solution).unwrap().amp;
+        let want = (0..amp.rows).fold(0.0f64, |m, t| m.max(amp.get(t, 0)));
+        assert_eq!(r.peak_amplitude, vec![want]);
+    }
+
+    /// The amplitude limit is penalised, not enforced, so a pulse that exceeds it says so.
+    #[test]
+    fn exceeding_the_maximum_rabi_frequency_is_reported() {
+        assert_eq!(amplitude_notice(&[0.5, 1.0]), None);
+        let notice = amplitude_notice(&[0.5, 1.07]).expect("a notice");
+        assert!(notice.contains("qubit 2") && notice.contains("1.07"), "{notice}");
+    }
 }

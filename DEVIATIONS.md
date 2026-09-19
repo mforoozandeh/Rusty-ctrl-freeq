@@ -39,9 +39,10 @@ below changes.  This file lists where the two differ, and why.
   scoring.
 - **Relaxation.** Python follows each unitary step with an explicit Euler step of the Lindblad dissipator, which
   does not keep states physical: a step longer than T1 turns populations negative, and fidelities can exceed 1.
-  Rust applies the dissipator's exact channel `exp(dt·D)`, which is completely positive and trace preserving, and
-  alternates it with the unitary step to the same first order in `dt`.  On the parity problem the two differ by
-  1e-4, the size of the Euler error there.
+  Rust applies the dissipator's exact channel, completely positive and trace preserving, as half a step at each end
+  of the pulse and whole steps between the unitary steps - Strang splitting, second order in `dt` where Euler is
+  first.  On the parity problem, against propagating each step without splitting at all, Python's fidelity is
+  6.4e-4 out and Rust's is 1.5e-5.
 - **Two-level transmons.** Python's two-level model writes `δ·Z + g·(X·X + Y·Y)` with spin-½ operators, while its
   three-level model writes `δ·n + g·(a†b + ab†)`: one configuration had the opposite detuning and half the exchange
   in the two-level model.  Rust's two-level model is the three-level one restricted to `|0⟩, |1⟩`:
@@ -70,6 +71,16 @@ below changes.  This file lists where the two differ, and why.
   band, its initial axis outside - and a gate only where every qubit is in its band, the identity elsewhere.
   `band_selective` coverage is refused with axis and gate targets; rotation (`Phi`/`Beta`) targets scale smoothly
   with its profile.
+- **Band-selective profile width.** Python's super-Gaussian profile uses `exp(−((o − Δ)/s)^(2p))` with
+  `s = bw/(2·√(2 ln 2))`, the conversion from a full width at half maximum to `σ` in `exp(−x²/2σ²)`, which that
+  form is not: the profile is a quarter of its maximum at the band edges for order 1, and less for higher orders,
+  while `selective` coverage treats the same `bw` as its band.  Rust uses `exp(−ln2·(2|o − Δ|/bw)^(2p))`, which is
+  1 at the centre and ½ at `Δ ± bw/2` for every order, and asks for a positive bandwidth and an order of at least 1.
+- **Leakage.** The plots report the population outside the computational subspace over time, under the mean drift
+  and across the snapshots, which Python does not.
+- **Peak amplitude.** A run reports the largest amplitude per qubit as a fraction of that qubit's maximum Rabi
+  frequency, and says so when a pulse exceeds it: the limit is a penalty in the cost, not a constraint, in both
+  packages.
 - **Observables of three-level transmons.** Python embeds the Pauli operators for the plots like gates, with the
   identity outside the computational subspace, so leaked population read +1 on every axis.  Rust projects them on
   the computational subspace: leaked population reads 0.
