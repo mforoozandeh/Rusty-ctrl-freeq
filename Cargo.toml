@@ -1,0 +1,59 @@
+[package]
+name = "ctrl-freeq"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+description = "Quantum gate and pulse design by optimal control, with automatic differentiation"
+license = "Apache-2.0"
+authors = ["Mohammadali Foroozandeh"]
+readme = "README.md"
+repository = "https://github.com/mforoozandeh/Rusty-ctrl-freeq"
+documentation = "https://docs.rs/ctrl-freeq"
+keywords = ["optimal-control", "quantum", "pulse-design", "autodiff", "qubits"]
+categories = ["science", "mathematics", "simulation"]
+exclude = ["/.github", "/.idea", "/deploy", "/docs", "/gui", "/tools", "/tests/fixtures"]
+
+# The GUI is a workspace member but not a default one: `cargo build`, `cargo test` and `cargo clippy` at the root
+# act on the library alone, so its minimum Rust version is not tied to the UI toolkit's.  Build the interface with
+# `cargo run -p ctrl-freeq-gui`.
+[workspace]
+members = []
+default-members = ["."]
+
+[features]
+default = ["parallel"]
+# Spread batch elements and Hessian columns over rayon's thread pool.  It has no effect on wasm32, which has no
+# threads and does not get rayon at all.
+parallel = ["dep:rayon"]
+
+[dependencies]
+nalgebra = "0.34"
+num-complex = "0.4"
+num-traits = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Seeded randomness only: no OS entropy, so nothing needs configuring for wasm32.
+rand = { version = "0.10", default-features = false }
+rand_chacha = { version = "0.10", default-features = false }
+rand_distr = { version = "0.6", default-features = false, features = ["std_math"] }
+# L-BFGS, Newton-CG and the trust region.  Default features off: they pull in `rand` and `getrandom`, which
+# need configuring for wasm32, and nothing here uses argmin's stochastic solvers.
+argmin = { version = "0.11", default-features = false }
+argmin-math = { version = "0.5", default-features = false, features = ["nalgebra_v0_34"] }
+# BOBYQA, a pure-Rust PRIMA port with no dependencies.  COBYLA is vendored in `src/optim/cobyla`.
+bobyqa = "0.3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = { version = "1.10", optional = true }
+
+# wasm32 has no monotonic clock of its own; `src/time.rs` uses `web-time` there.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1"
+
+[dev-dependencies]
+# Only to set the thread count in the determinism tests.
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

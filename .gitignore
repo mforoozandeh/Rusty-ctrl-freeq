@@ -1,0 +1,11 @@
+/target
+
+# JetBrains (RustRover)
+/.idea
+*.iml
+
+# macOS
+.DS_Store
+
+# Trunk output
+/gui/dist
