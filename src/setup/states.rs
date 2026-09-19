@@ -86,6 +86,17 @@ pub fn gate_names(n: usize) -> &'static [&'static str] {
     }
 }
 
+/// The canonical name of gate `name`, which some gates have more than one of: `CX` is `CNOT`.
+///
+/// Targets name one gate when their canonical names agree, whatever the configuration spelled; see
+/// [`Targets::single_gate`](crate::config::Targets::single_gate).
+pub fn canonical_gate(name: &str) -> &str {
+    match name {
+        "CX" => "CNOT",
+        other => other,
+    }
+}
+
 /// The unitary for gate `name` on `n` qubits.
 pub fn gate(name: &str, n: usize) -> Result<CMat<f64>> {
     let (o, l, i) = (c(0.0, 0.0), c(1.0, 0.0), c(0.0, 1.0));

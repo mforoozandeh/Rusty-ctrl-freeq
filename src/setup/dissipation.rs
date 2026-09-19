@@ -49,6 +49,38 @@ mod tests {
         assert!((ops[1].get(1, 1).re + 0.5).abs() < 1e-15);
     }
 
+    /// One step is the exact relaxation channel: populations relax at 1/T1 and coherences at 1/T2, also over steps
+    /// longer than T1, where an explicit Euler step turns populations negative.
+    #[test]
+    fn a_step_is_the_exact_relaxation_channel() {
+        let (t1, t2) = (1.0, 1.5);
+        for dt in [0.01, 0.7, 2.0] {
+            let ops = crate::autodiff::LindbladOps::new(&collapse_operators(&[t1], &[t2]).unwrap(), dt).unwrap();
+            let coherence = C::new(0.2, 0.4);
+            let rho = Mat::from_vec(
+                2,
+                2,
+                vec![C::new(0.3, 0.0), coherence, coherence.conj(), C::new(0.7, 0.0)],
+            )
+            .unwrap();
+            let out = ops.apply(&rho, false).unwrap();
+            let excited = 0.7 * (-dt / t1).exp();
+            assert!((out.get(1, 1).re - excited).abs() < 1e-14, "dt {dt}");
+            assert!((out.get(0, 0).re - (1.0 - excited)).abs() < 1e-14, "dt {dt}");
+            assert!((out.get(0, 1) - coherence * (-dt / t2).exp()).norm() < 1e-14, "dt {dt}");
+        }
+    }
+
+    /// A step backwards in time is not a channel: it would take population below zero.
+    #[test]
+    fn the_channel_refuses_a_negative_or_infinite_step() {
+        let ops = collapse_operators(&[1.0], &[2.0]).unwrap();
+        assert!(crate::autodiff::LindbladOps::new(&ops, -0.1).is_err());
+        assert!(crate::autodiff::LindbladOps::new(&ops, f64::NAN).is_err());
+        assert!(crate::autodiff::LindbladOps::new(&ops, f64::INFINITY).is_err());
+        assert!(crate::autodiff::LindbladOps::new(&ops, 0.1).is_ok());
+    }
+
     #[test]
     fn t2_at_twice_t1_has_no_dephasing() {
         assert_eq!(collapse_operators(&[1.0], &[2.0]).unwrap().len(), 1);

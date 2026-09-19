@@ -144,3 +144,38 @@ fn linspace_matches_numpy() {
     assert_eq!(v, vec![-1.0, -0.5, 0.0, 0.5, 1.0]);
     assert_eq!(linspace(0.0, 1.0, 1), vec![0.0]);
 }
+
+/// Two points sit at x = ±1, where a symmetric envelope has one value: there is nothing to taper, so it is flat.
+#[test]
+fn a_constant_envelope_is_flat() {
+    for name in ["gn", "hs"] {
+        assert_eq!(envelope(name, &[-1.0, 1.0], 1).unwrap(), vec![1.0, 1.0], "{name}");
+    }
+}
+
+/// Chirps are even in x, so ten symmetric points hold only five independent ones.  QR would still return eight
+/// orthonormal columns, the missing three arbitrary and not even symmetric.
+#[test]
+fn linearly_dependent_bases_are_refused() {
+    let n_pulse = 10;
+    let env = envelope("gn", &linspace(-1.0, 1.0, n_pulse), 1).unwrap();
+    for mode in WaveformMode::ALL {
+        // Eight columns in every mode.
+        let n_para = if mode == PolarPhase { 8 } else { 16 };
+        let qb = qubit_basis(
+            basis("chirp").unwrap().as_ref(),
+            &env,
+            n_para,
+            mode,
+            n_pulse,
+            &mut rng(),
+        );
+        assert!(
+            matches!(qb, Err(Error::Config(ref m)) if m.contains("independent")),
+            "{mode:?}: {qb:?}"
+        );
+    }
+    let many = 50;
+    let env = envelope("gn", &linspace(-1.0, 1.0, many), 1).unwrap();
+    assert!(qubit_basis(basis("chirp").unwrap().as_ref(), &env, 16, Cart, many, &mut rng()).is_ok());
+}

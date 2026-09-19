@@ -179,11 +179,38 @@ fn hilbert_propagation(dim: usize) {
                 let uu = t.expm_mi_dt(h, 0.4)?;
                 psi = t.matmul(uu, psi)?;
             }
-            t.overlap_sq(&target, psi)
+            t.fidelity(&target, psi)
         },
         &x,
         1e-5,
     );
+}
+
+/// Propagating several columns at once and scoring them by the average gate fidelity.
+#[test]
+fn gate_fidelity_gradients() {
+    for (dim, k) in [(2, 2), (4, 4), (3, 2)] {
+        let h0 = hermitian(dim, 11, 2.0);
+        let ops = vec![hermitian(dim, 20, 1.0)];
+        let columns: Vec<CMat<f64>> = (0..k).map(|c| unit_vector(dim, 30 + c as u64)).collect();
+        let psi0 = CMat::from_fn(dim, k, |r, c| columns[c].get(r, 0));
+        let target = CMat::from_fn(dim, k, |r, c| unit_vector(dim, 40 + c as u64).get(r, 0));
+        let x = numbers(3, 7);
+        check_gradient(
+            &format!("gate fidelity D={dim} k={k}"),
+            |t, v| {
+                let mut psi = t.constant(Value::C(psi0.clone()));
+                for s in 0..3 {
+                    let h = t.lincomb_row(&h0, v, s, &ops)?;
+                    let uu = t.expm_mi_dt(h, 0.4)?;
+                    psi = t.matmul(uu, psi)?;
+                }
+                t.fidelity(&target, psi)
+            },
+            &x,
+            1e-5,
+        );
+    }
 }
 
 #[test]
@@ -205,7 +232,7 @@ fn liouville_and_lindblad_gradients() {
         m.set(0, 1, C::new(0.5, 0.0));
         m
     }];
-    let lops = LindbladOps::new(&collapse).unwrap();
+    let lops = LindbladOps::new(&collapse, 0.3).unwrap();
     let x = numbers(4, 9);
     for dissipative in [false, true] {
         check_gradient(
@@ -220,7 +247,7 @@ fn liouville_and_lindblad_gradients() {
                     let uu = t.expm_mi_dt(h, 0.3)?;
                     rho = t.sandwich(uu, rho)?;
                     if dissipative {
-                        rho = t.lindblad_step(rho, &lops, 0.3)?;
+                        rho = t.lindblad_step(rho, &lops)?;
                     }
                 }
                 t.re_trace_product(&sigma, rho)
@@ -254,7 +281,7 @@ fn batch_mean_matches_the_sequential_sum() {
             let uu = t.expm_mi_dt(h, 0.5)?;
             psi = t.matmul(uu, psi)?;
         }
-        t.overlap_sq(target, psi)
+        t.fidelity(target, psi)
     }
 
     // Batched.
@@ -326,7 +353,7 @@ fn dual_reverse_pass_gives_hessian_vector_products() {
             let uu = t.expm_mi_dt(h, 0.6)?;
             psi = t.matmul(uu, psi)?;
         }
-        let f = t.overlap_sq(target, psi)?;
+        let f = t.fidelity(target, psi)?;
         let sq = t.square(v)?;
         let reg = t.sum(sq)?;
         let r = t.scale(reg, 0.1)?;

@@ -220,7 +220,7 @@ impl Coverage {
 pub enum Targets {
     /// A product state, one axis per qubit, per initial state.
     Axis(Vec<Vec<String>>),
-    /// A gate name per initial state.
+    /// A gate name per initial state; see [`Targets::single_gate`] for what one name for every state means.
     Gate(Vec<String>),
     /// A rotation about an axis per qubit (`x`, `-x`, `y`, `-y`, `z`, `-z`) by an angle in degrees, per initial state.
     PhiBeta {
@@ -253,6 +253,23 @@ impl Targets {
     /// Whether there are no target entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The gate every initial state names, when they all name the same one.  Such a target asks for the gate
+    /// itself, scored by its average gate fidelity over the computational basis; different gates for different
+    /// initial states ask for each state to reach its gate's image.
+    pub fn single_gate(&self) -> Option<&str> {
+        match self {
+            Targets::Gate(names) => {
+                // By canonical name, so that `CNOT` and `CX` are the one gate they describe.
+                let first = crate::setup::canonical_gate(names.first()?);
+                names
+                    .iter()
+                    .all(|n| crate::setup::canonical_gate(n) == first)
+                    .then_some(first)
+            }
+            _ => None,
+        }
     }
 }
 

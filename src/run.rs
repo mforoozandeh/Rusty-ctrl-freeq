@@ -74,6 +74,12 @@ pub fn run(cfg: &Config, sink: &mut dyn ProgressSink) -> Result<RunResult> {
     if cfg.compute_resource.as_deref() == Some("gpu") {
         notices.push("GPU is not supported; running on CPU.".to_string());
     }
+    if let Some(gate) = cfg.target_states.single_gate() {
+        notices.push(format!(
+            "The fidelity is the {gate} gate's average gate fidelity over the computational basis; the initial \
+             states only set what the dynamics plots show."
+        ));
+    }
     let mut history = History {
         inner: sink,
         fidelities: Vec::new(),

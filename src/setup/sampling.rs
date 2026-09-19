@@ -1,9 +1,10 @@
 //! Sampling the uncertain parameters: offsets per coverage mode, couplings and Rabi frequencies.
 //!
-//! The distributions and their structure follow the Python package; the sampled values differ because the random
-//! number generators do.
+//! The distributions follow the Python package; the sampled values differ because the random number generators
+//! do, and selective offsets are shuffled so that qubits fall in and out of their bands independently.
 
 use rand::RngExt;
+use rand::seq::SliceRandom;
 use rand_distr::{Distribution, Normal};
 
 use super::Rng;
@@ -65,7 +66,10 @@ pub(crate) fn sample_offsets(q: &QubitOffsets, m: usize, rng: &mut Rng) -> Vec<f
                     }
                 })
                 .collect();
-            left.into_iter().chain(middle).chain(right).collect()
+            // Shuffled, so that pairing the qubits' offsets by index pairs their bands at random too.
+            let mut all: Vec<f64> = left.into_iter().chain(middle).chain(right).collect();
+            all.shuffle(rng);
+            all
         }
     }
 }
@@ -143,9 +147,9 @@ mod tests {
         let q = offsets(Coverage::BandSelective);
         let s = sample_offsets(&q, 100, &mut rng);
         assert_eq!(s.len(), 100);
-        assert!(s[..25].iter().all(|&o| (6.0..9.0).contains(&o)));
-        assert!(s[25..75].iter().all(|&o| (9.0..11.0).contains(&o)));
-        assert!(s[75..].iter().all(|&o| (11.0..14.0).contains(&o)));
+        let count = |r: std::ops::Range<f64>| s.iter().filter(|&&o| r.contains(&o)).count();
+        assert_eq!((count(6.0..9.0), count(9.0..11.0), count(11.0..14.0)), (25, 50, 25));
+        assert!(s[..25].iter().any(|&o| o >= 9.0), "shuffled, not left band first");
         let p = excitation_profile(&q, &[10.0, 11.0, 13.0]);
         assert_eq!(p[0], 1.0);
         assert!(p[1] < 1.0 && p[2] < p[1]);

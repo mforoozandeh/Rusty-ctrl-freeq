@@ -7,7 +7,7 @@ own automatic differentiation, and builds for WebAssembly.  The crate is publish
 
 A pulse on each qubit is expanded in a few smooth basis functions.  It is propagated through a batch of drift
 Hamiltonians that sample the uncertainty in offsets, couplings and drive strength, and scored by the mean fidelity
-to a target state or gate.  An optimiser adjusts the basis coefficients using exact gradients and Hessians.
+to a target state, or by the average gate fidelity to a target gate.  An optimiser adjusts the basis coefficients using exact gradients and Hessians.
 
 ## Features
 

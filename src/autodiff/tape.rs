@@ -99,8 +99,8 @@ pub(crate) enum Op<'a, T> {
     ExpmMiDt(Var, f64),
     Matmul(Var, Var),
     Sandwich(Var, Var),
-    Lindblad(Var, &'a LindbladOps, f64),
-    OverlapSq(&'a CMat<f64>, Var),
+    Lindblad(Var, &'a LindbladOps),
+    Fidelity(&'a CMat<f64>, Var),
     ReTraceProduct(&'a CMat<f64>, Var),
     BatchMean(Vec<Var>, Vec<Value<T>>),
 }
@@ -292,8 +292,8 @@ impl<'a, T: Scalar> Tape<'a, T> {
             Op::ExpmMiDt(h, dt) => vec![(*h, oc::expm_mi_dt_adjoint(v(*h), *dt, g)?)],
             Op::Matmul(a, b) => oc::matmul_adjoint(*a, *b, v(*a), v(*b), g)?,
             Op::Sandwich(u, rho) => oc::sandwich_adjoint(*u, *rho, v(*u), v(*rho), g)?,
-            Op::Lindblad(rho, ops, dt) => vec![(*rho, oc::lindblad_adjoint(ops, *dt, g)?)],
-            Op::OverlapSq(t, psi) => vec![(*psi, oc::overlap_sq_adjoint(t, v(*psi), g)?)],
+            Op::Lindblad(rho, ops) => vec![(*rho, oc::lindblad_adjoint(ops, g)?)],
+            Op::Fidelity(t, psi) => vec![(*psi, oc::fidelity_adjoint(t, v(*psi), g)?)],
             Op::ReTraceProduct(sigma, rho) => vec![(*rho, oc::re_trace_product_adjoint(sigma, g)?)],
             Op::BatchMean(inputs, stored) => {
                 let s = g.r("batch mean gradient")?.data[0];

@@ -99,6 +99,7 @@ mod tests {
         };
         Analysis {
             times_ns: (0..points).map(|t| t as f64 * 2.0).collect(),
+            state_times_ns: (0..=points).map(|t| t as f64 * 2.0).collect(),
             pulses: vec![trace(0), trace(1)],
             dynamics: vec![],
             profiles: vec![],

@@ -2,7 +2,8 @@
 //!
 //! The fixtures in `tests/fixtures` come from `tools/python_reference/generate.py`, which runs the Python ctrl-freeq
 //! 0.3.0 on each configuration at a fixed parameter vector.  Every quantity the Rust setup and objective produce is
-//! compared: basis matrices, drift Hamiltonians, initial states, targets, modulation, the cost and its gradient.
+//! compared: basis matrices, drift Hamiltonians, initial states, targets, modulation, the cost and its gradient -
+//! except where Rust departs from Python 0.3.0 on purpose, as `DEVIATIONS.md` lists under "Behaviour fixed".
 
 use std::path::Path;
 
@@ -55,10 +56,35 @@ fn close(a: f64, b: f64, rel: f64) -> bool {
     (a - b).abs() <= rel * a.abs().max(b.abs()).max(1e-3)
 }
 
+/// Where a fixture's configuration meets a deliberate departure from Python 0.3.0.
+struct Departures {
+    /// One gate for every initial state: scored by the average gate fidelity, not state by state.
+    gate: bool,
+    /// Two-level transmons: the three-level model's detuning sign and exchange strength, and the corrected ZZ.
+    transmon: bool,
+    /// A carrier offset: waveform samples at the middle of each step, not on Python's slightly wider grid.
+    carrier: bool,
+    /// Relaxation: the dissipator's exact channel instead of an Euler step, which differs by O(dt/T1).
+    relaxation: bool,
+}
+
+impl Departures {
+    fn of(cfg: &Config) -> Self {
+        Departures {
+            gate: cfg.target_states.single_gate().is_some(),
+            transmon: cfg.hamiltonian_type.as_deref() == Some("superconducting"),
+            carrier: cfg.parameters.pulse_offset.iter().any(|&o| o != 0.0),
+            relaxation: cfg.is_dissipative(),
+        }
+    }
+}
+
 #[test]
 fn setup_and_objective_match_python() {
+    let mut full_objective = 0;
     for (name, fx) in fixtures() {
         let cfg = Config::from_json(&fx["config"].to_string()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let departs = Departures::of(&cfg);
         let problem = Problem::build_with_seed(&cfg, 0).unwrap();
         let liouville = problem.space == Space::Liouville;
 
@@ -81,39 +107,59 @@ fn setup_and_objective_match_python() {
             }
         }
 
-        // Batch: drift, initial state and target per element.
+        // Drifts.  Every fixture has one drift snapshot, so every batch element's drift is the fixture's first.
         let h0 = fx["h0"].as_array().unwrap();
-        assert_eq!(h0.len(), problem.batch.len(), "{name}: batch size");
-        for (i, e) in problem.batch.iter().enumerate() {
-            let scale = e.h0.norm1();
-            assert!(e.h0.max_abs_diff(&cmat(&h0[i])) <= 1e-12 * scale, "{name}: H0[{i}]");
-            assert!(
-                e.initial.max_abs_diff(&cmat(&fx["initials"][i])) < 1e-12,
-                "{name}: initial[{i}]"
-            );
-            assert!(
-                e.target.max_abs_diff(&cmat(&fx["targets"][i])) < 1e-12,
-                "{name}: target[{i}]"
-            );
+        assert_eq!(problem.n_snapshots, 1, "{name}");
+        if !departs.transmon {
+            for e in &problem.batch {
+                assert!(e.h0.max_abs_diff(&cmat(&h0[0])) <= 1e-12 * e.h0.norm1(), "{name}: H0");
+            }
+        }
+
+        // Initial states and targets, per batch element.
+        if !departs.gate {
+            assert_eq!(h0.len(), problem.batch.len(), "{name}: batch size");
+            for (i, e) in problem.batch.iter().enumerate() {
+                assert!(
+                    e.initial.max_abs_diff(&cmat(&fx["initials"][i])) < 1e-12,
+                    "{name}: initial[{i}]"
+                );
+                assert!(
+                    e.target.max_abs_diff(&cmat(&fx["targets"][i])) < 1e-12,
+                    "{name}: target[{i}]"
+                );
+            }
         }
 
         // Modulation.
-        let modulation = fx["modulation"].as_array().unwrap();
-        for (t, row) in modulation.iter().enumerate() {
-            for (q, v) in row.as_array().unwrap().iter().enumerate() {
-                assert!(
-                    (problem.modulation.get(t, q) - complex(v)).norm() < 1e-12,
-                    "{name}: modulation"
-                );
+        if !departs.carrier {
+            let modulation = fx["modulation"].as_array().unwrap();
+            for (t, row) in modulation.iter().enumerate() {
+                for (q, v) in row.as_array().unwrap().iter().enumerate() {
+                    assert!(
+                        (problem.modulation.get(t, q) - complex(v)).norm() < 1e-12,
+                        "{name}: modulation"
+                    );
+                }
             }
         }
 
         // Cost and gradient.  Python's Liouville fidelity goes through two eigendecompositions of rank-deficient
         // matrices, which costs it a few digits; Rust's Re Tr(ρσ) is exact for the pure targets.
+        if departs.gate || departs.transmon || departs.carrier {
+            continue;
+        }
+        let (rel, grel) = match (departs.relaxation, liouville) {
+            (true, _) => (1e-3, 1e-3),
+            (false, true) => (1e-7, 1e-5),
+            (false, false) => (1e-10, 1e-8),
+        };
+        if !departs.relaxation {
+            full_objective += 1;
+        }
         let model = CostModel::new(problem);
         let x = f64s(&fx["x"]);
         let (e, g) = model.value_and_gradient(&x).unwrap();
-        let rel = if liouville { 1e-7 } else { 1e-10 };
         let cost = fx["cost"].as_f64().unwrap();
         assert!(close(e.cost, cost, rel), "{name}: cost {} vs {cost}", e.cost);
         assert!(
@@ -126,7 +172,6 @@ fn setup_and_objective_match_python() {
         );
         if let Some(want) = fx["gradient"].as_array() {
             let gmax = g.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-            let grel = if liouville { 1e-5 } else { 1e-8 };
             for (i, w) in want.iter().enumerate() {
                 let w = w.as_f64().unwrap();
                 assert!(
@@ -137,4 +182,9 @@ fn setup_and_objective_match_python() {
             }
         }
     }
+    // State targets in Hilbert and Liouville space, rotations, and a spin chain with XYZ coupling.
+    assert!(
+        full_objective >= 4,
+        "only {full_objective} fixtures compare the objective exactly"
+    );
 }

@@ -143,3 +143,18 @@ fn syntax_errors_are_config_errors() {
     let err = Config::from_json(&bad_mode).unwrap_err().to_string();
     assert!(err.contains("spherical"), "{err}");
 }
+
+/// A smooth band-selective profile has no in-band region for a state or gate to apply in; rotations scale with it.
+#[test]
+fn band_selective_coverage_needs_rotation_targets() {
+    let mut cfg = single_qubit();
+    cfg.parameters.coverage = vec![ctrl_freeq::config::Coverage::BandSelective];
+    assert!(cfg.validate().iter().any(|p| p.contains("band_selective")), "axis");
+    cfg.target_states = Targets::Gate(vec!["X".into()]);
+    assert!(cfg.validate().iter().any(|p| p.contains("band_selective")), "gate");
+    cfg.target_states = Targets::PhiBeta {
+        phi: vec![vec!["x".into()]],
+        beta: vec![vec![180.0]],
+    };
+    assert!(cfg.validate().is_empty(), "{:?}", cfg.validate());
+}

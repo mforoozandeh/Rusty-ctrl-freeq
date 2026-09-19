@@ -168,7 +168,7 @@ fn dynamics(ui: &mut Ui, view: &mut View, r: &Results) {
     let Some(d) = a.dynamics.get(view.initial_state) else {
         return;
     };
-    let t = &a.times_ns;
+    let t = &a.state_times_ns;
     ui.label(RichText::new("Observables under the mean drift; the band spans the batch snapshots.").weak());
     for (q, obs) in d.observables.iter().enumerate() {
         Plot::new(("obs", q))

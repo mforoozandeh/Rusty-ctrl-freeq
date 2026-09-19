@@ -170,6 +170,13 @@ pub(super) fn validate(cfg: &Config) -> Vec<String> {
     }
 
     // States and targets.
+    if p.coverage.contains(&Coverage::BandSelective) && !matches!(cfg.target_states, Targets::PhiBeta { .. }) {
+        v.push(
+            "band_selective coverage needs Phi/Beta rotation targets: its smooth profile has no band for an axis or \
+             gate target to apply in (use selective coverage for those)"
+                .into(),
+        );
+    }
     if cfg.initial_states.is_empty() {
         v.push("at least one initial state is needed".into());
     }

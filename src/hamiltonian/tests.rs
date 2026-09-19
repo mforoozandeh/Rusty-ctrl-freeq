@@ -1,5 +1,6 @@
 use super::*;
 use crate::autodiff::C;
+use crate::error::Error;
 use crate::setup::{gate, product_state, spin_ops};
 
 fn j2(u: f64, l: f64) -> Vec<Vec<f64>> {
@@ -14,7 +15,7 @@ fn drifts_are_hermitian() {
         Box::new(Superconducting::new(
             2,
             "XY+ZZ".into(),
-            Some(vec![-10.0, -12.0]),
+            Some(vec![-1000.0, -1200.0]),
             None,
             Some(vec![0.1, 0.2]),
         )),
@@ -57,14 +58,15 @@ fn zz_crosstalk_takes_priority_over_the_anharmonicity_formula() {
     let g = upper_coupling(&j2(3.0, 0.0), 2).unwrap();
     let mut zz = RMat::<f64>::zeros(2, 2);
     zz.set(0, 1, 0.7);
-    let with_formula = Superconducting::new(2, "ZZ".into(), Some(vec![-10.0, -10.0]), None, None);
-    let with_calibrated = Superconducting::new(2, "ZZ".into(), Some(vec![-10.0, -10.0]), Some(zz), None);
+    let with_formula = Superconducting::new(2, "ZZ".into(), Some(vec![-1000.0, -1000.0]), None, None);
+    let with_calibrated = Superconducting::new(2, "ZZ".into(), Some(vec![-1000.0, -1000.0]), Some(zz), None);
     let zz_op = |m: &Superconducting| {
         let h = m.drift(&[0.0, 0.0], Some(&g)).unwrap();
         // |00> sees +ζ/4.
         h.get(0, 0).re * 4.0
     };
-    assert!((zz_op(&with_formula) - 2.0 * 9.0 * (-0.2)).abs() < 1e-12);
+    // 2g²(α₁ + α₂)/((Δ + α₁)(Δ − α₂)) at Δ = 0.
+    assert!((zz_op(&with_formula) - 2.0 * 9.0 * (-2000.0) / (-1000.0 * 1000.0)).abs() < 1e-12);
     assert!((zz_op(&with_calibrated) - 0.7).abs() < 1e-12);
 }
 
@@ -79,9 +81,82 @@ fn stark_shift_adds_a_power_channel_per_qubit() {
             qubit: 0,
             source: Source::Power,
             rabi_power: 2,
-            coeff: 0.1
+            coeff: -0.1
         }
     );
+}
+
+/// The two-level model is the three-level one restricted to the computational subspace, up to a constant: the same
+/// configuration describes the same device in both, with the same detuning sign and exchange strength.
+#[test]
+fn two_level_transmons_are_the_projected_duffing_model() {
+    let j = upper_coupling(&j2(3.0, 0.0), 2).unwrap();
+    let offsets = [1.0, -2.0];
+    let duffing = DuffingTransmon::new(2, vec![-10.0, -12.0]).unwrap();
+    let p = duffing.embed_state(&CMat::identity(4)).unwrap();
+    let h3 = duffing.drift(&offsets, Some(&j)).unwrap();
+    let projected = p.adjoint().matmul(&h3).unwrap().matmul(&p).unwrap();
+    let h2 = Superconducting::new(2, "XY".into(), None, None, None)
+        .drift(&offsets, Some(&j))
+        .unwrap();
+    let diff = projected.sub(&h2).unwrap();
+    assert!(diff.max_abs_diff(&CMat::identity(4).scale(diff.get(0, 0))) < 1e-14);
+}
+
+/// The static ZZ estimate is the one the three-level spectrum has: E₁₁ − E₁₀ − E₀₁ + E₀₀ of the dressed states.
+#[test]
+fn the_zz_estimate_matches_the_three_level_spectrum() {
+    let tau = 2.0 * std::f64::consts::PI;
+    let alpha = vec![-330e6 * tau, -310e6 * tau];
+    let j = upper_coupling(&j2(10e6 * tau, 0.0), 2).unwrap();
+    for detuning in [50e6, -80e6] {
+        let offsets = [(20e6 + detuning) * tau, 20e6 * tau];
+        // Dressed energies of |00>, |01>, |10>, |11>: the eigenvalue whose eigenvector overlaps each most.
+        let h = DuffingTransmon::new(2, alpha.clone())
+            .unwrap()
+            .drift(&offsets, Some(&j))
+            .unwrap();
+        let eig = nalgebra::SymmetricEigen::new(nalgebra::DMatrix::from_fn(9, 9, |r, c| h.get(r, c).re));
+        let energy = |bare: usize| {
+            let k = (0..9)
+                .max_by(|&a, &b| {
+                    eig.eigenvectors[(bare, a)]
+                        .abs()
+                        .total_cmp(&eig.eigenvectors[(bare, b)].abs())
+                })
+                .unwrap();
+            eig.eigenvalues[k]
+        };
+        let exact = energy(4) - energy(3) - energy(1) + energy(0);
+        // ZZ alone, so the diagonal holds the term: ζ = H₀₀ + H₃₃ − H₁₁ − H₂₂.
+        let h2 = Superconducting::new(2, "ZZ".into(), Some(alpha.clone()), None, None)
+            .drift(&offsets, Some(&j))
+            .unwrap();
+        let estimate = h2.get(0, 0).re + h2.get(3, 3).re - h2.get(1, 1).re - h2.get(2, 2).re;
+        assert!(
+            exact > 0.0,
+            "transmons with negative anharmonicity repel into positive ZZ"
+        );
+        assert!(
+            (estimate - exact).abs() < 0.01 * exact,
+            "{detuning}: {estimate} vs {exact}"
+        );
+    }
+}
+
+/// The estimate is second order, so its error grows as the square of the mixing ratio `√2·g/Δ`: it is refused
+/// wherever that ratio is not small, |11> approaching |20> or |02>.
+#[test]
+fn the_zz_estimate_is_refused_off_the_dispersive_regime() {
+    let tau = 2.0 * std::f64::consts::PI;
+    let j = upper_coupling(&j2(10e6 * tau, 0.0), 2).unwrap();
+    let m = Superconducting::new(2, "ZZ".into(), Some(vec![-300e6 * tau, -300e6 * tau]), None, None);
+    // √2·10/300 = 0.05: within about a quarter of a percent of the three-level spectrum.
+    assert!(m.drift(&[0.0, 0.0], Some(&j)).is_ok());
+    // |11> is 15 MHz from |20>, a mixing ratio of 0.94: the estimate overshoots by half.
+    assert!(matches!(m.drift(&[285e6 * tau, 0.0], Some(&j)), Err(Error::Config(_))));
+    // 100 MHz away, a ratio of 0.14, is still refused: the estimate is off by 2%.
+    assert!(matches!(m.drift(&[200e6 * tau, 0.0], Some(&j)), Err(Error::Config(_))));
 }
 
 #[test]

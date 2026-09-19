@@ -144,11 +144,12 @@ pub fn qubit_basis(
     let x = linspace(-1.0, 1.0, n_pulse);
     let b = basis.matrix(&x, ncols, rng);
     let enveloped = RMat::from_fn(n_pulse, ncols, |r, c| b.get(r, c) * envelope[r]);
+    let orthonormal = |m: &RMat<f64>| orthonormal(m, basis.name());
     let q = match mode {
-        WaveformMode::PolarPhase => [RMat::from_fn(n_pulse, ncols, |r, _| envelope[r]), qr_q(&b)],
-        WaveformMode::Polar => [qr_q(&enveloped), qr_q(&b)],
+        WaveformMode::PolarPhase => [RMat::from_fn(n_pulse, ncols, |r, _| envelope[r]), orthonormal(&b)?],
+        WaveformMode::Polar => [orthonormal(&enveloped)?, orthonormal(&b)?],
         WaveformMode::Cart => {
-            let q = qr_q(&enveloped);
+            let q = orthonormal(&enveloped)?;
             [q.clone(), q]
         }
     };
@@ -158,6 +159,23 @@ pub fn qubit_basis(
         envelope: RMat::column(envelope.to_vec()),
         n_params: basis.parameter_count(n_para, mode),
     })
+}
+
+/// The QR basis of `m`'s columns, refused unless they are linearly independent: for dependent columns QR fills the
+/// missing directions with arbitrary vectors, waveforms the basis never had.  The rank is numpy's `matrix_rank`: the
+/// singular values above `σ_max · max(rows, cols) · ε`.
+fn orthonormal(m: &RMat<f64>, name: &str) -> Result<RMat<f64>> {
+    let s = nalgebra::DMatrix::from_fn(m.rows, m.cols, |r, c| m.get(r, c)).singular_values();
+    let tol = s.max() * m.rows.max(m.cols) as f64 * f64::EPSILON;
+    let rank = s.iter().filter(|&&v| v > tol).count();
+    if rank < m.cols {
+        return Err(Error::Config(format!(
+            "the {name} basis has only {rank} independent functions of the {} requested on {} points; use fewer \
+             parameters or more points",
+            m.cols, m.rows
+        )));
+    }
+    Ok(qr_q(m))
 }
 
 /// `n_para` raw coefficients drawn uniformly from `[−1, 1)`, as numpy's `uniform(-1, 1, n_para)` does.

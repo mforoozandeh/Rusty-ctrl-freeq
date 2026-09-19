@@ -5,92 +5,87 @@
 use super::tape::{Op, Tape, Value, Var, liftc, mulc};
 use super::{C, Scalar};
 use crate::error::{Error, Result};
-use crate::linalg::{CMat, RMat, expm_frechet_adjoint, expm_mi_dt};
+use crate::linalg::{CMat, RMat, expm, expm_frechet_adjoint, expm_mi_dt};
 
-/// Lindblad collapse operators with the products the dissipator needs, computed once.
+/// The dissipative half of a Lindblad time step: the channel `exp(dt·D)`, with
+/// `D[ρ] = Σ_k (L_k ρ L_k† − ½{L_k†L_k, ρ})` for the collapse operators `L_k`.
+///
+/// The channel is exact, so every step is completely positive and trace preserving: states stay physical and
+/// fidelities at most 1 however long the step is compared with T1 and T2.  Alternating it with the unitary step is
+/// first-order (Lie-Trotter) splitting in `dt`, the order of the explicit Euler step it replaces.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LindbladOps {
-    /// The collapse operators `L_k`.
-    pub l: Vec<CMat<f64>>,
-    /// `L_k†`.
-    pub l_dag: Vec<CMat<f64>>,
-    /// `L_k†·L_k`.
-    pub l_dag_l: Vec<CMat<f64>>,
+    dim: usize,
+    /// The non-zero entries `(to, from, value)` of `exp(dt·D)` acting on the row-major `vec(ρ)`.
+    channel: Vec<(usize, usize, C<f64>)>,
 }
 
 impl LindbladOps {
-    /// Precompute the products for `collapse`.
-    pub fn new(collapse: &[CMat<f64>]) -> Result<Self> {
-        let l = collapse.to_vec();
-        let l_dag: Vec<CMat<f64>> = l.iter().map(|m| m.adjoint()).collect();
-        let l_dag_l = l_dag.iter().zip(&l).map(|(a, b)| a.matmul(b)).collect::<Result<_>>()?;
-        Ok(LindbladOps { l, l_dag, l_dag_l })
+    /// The channel for `collapse`, square operators of one dimension, over a step `dt`.
+    ///
+    /// Time runs forwards: a negative step is not a channel and would take populations below zero.
+    pub fn new(collapse: &[CMat<f64>], dt: f64) -> Result<Self> {
+        if !(dt >= 0.0 && dt.is_finite()) {
+            return Err(Error::Config(format!(
+                "a Lindblad step of {dt} seconds; it must be zero or more"
+            )));
+        }
+        let dim = collapse
+            .first()
+            .ok_or_else(|| Error::Config("Lindblad evolution needs at least one collapse operator".into()))?
+            .rows;
+        if collapse.iter().any(|l| l.shape() != (dim, dim)) {
+            return Err(Error::Dimension(
+                "collapse operators must be square and of one size".into(),
+            ));
+        }
+        // The generator column by column: column i·dim + j is vec(D[|i⟩⟨j|]).
+        let n = dim * dim;
+        let mut generator = CMat::<f64>::zeros(n, n);
+        for from in 0..n {
+            let mut e = CMat::<f64>::zeros(dim, dim);
+            e.data[from] = C::new(dt, 0.0);
+            for (to, v) in dissipator(collapse, &e)?.data.into_iter().enumerate() {
+                generator.set(to, from, v);
+            }
+        }
+        let map = expm(&generator)?;
+        let channel = (0..n)
+            .flat_map(|to| (0..n).map(move |from| (to, from)))
+            .map(|(to, from)| (to, from, map.get(to, from)))
+            .filter(|&(_, _, v)| v != C::new(0.0, 0.0))
+            .collect();
+        Ok(LindbladOps { dim, channel })
     }
 
-    /// `D[ρ] = Σ_k (L ρ L† − ½{L†L, ρ})`, or its adjoint `Σ_k (L† ρ L − ½{L†L, ρ})` when `adjoint` is set.
-    pub(crate) fn dissipator<T: Scalar>(&self, rho: &CMat<T>, adjoint: bool) -> Result<CMat<T>> {
-        let n = rho.rows;
-        let mut out = CMat::<T>::zeros(n, n);
-        let half = T::from_f64(0.5);
-        for k in 0..self.l.len() {
-            let (left, right) = if adjoint {
-                (&self.l_dag[k], &self.l[k])
+    /// The channel applied to `rho`, or its adjoint (the Heisenberg-picture map) when `adjoint` is set.
+    pub fn apply<T: Scalar>(&self, rho: &CMat<T>, adjoint: bool) -> Result<CMat<T>> {
+        if rho.shape() != (self.dim, self.dim) {
+            return Err(Error::Dimension(format!(
+                "a {}x{} density matrix for {}-level collapse operators",
+                rho.rows, rho.cols, self.dim
+            )));
+        }
+        let mut out = CMat::<T>::zeros(self.dim, self.dim);
+        for &(to, from, v) in &self.channel {
+            if adjoint {
+                out.data[from] += mulc(v.conj(), rho.data[to]);
             } else {
-                (&self.l[k], &self.l_dag[k])
-            };
-            let jump = mat_cf(&mat_fc(left, rho)?, right)?;
-            let anti = mat_fc(&self.l_dag_l[k], rho)?.add(&mat_cf(rho, &self.l_dag_l[k])?)?;
-            out = out.add(&jump)?;
-            out.axpy_re(-half, &anti);
+                out.data[to] += mulc(v, rho.data[from]);
+            }
         }
         Ok(out)
     }
 }
 
-/// `a·b` with a constant `f64` left factor.
-pub(crate) fn mat_fc<T: Scalar>(a: &CMat<f64>, b: &CMat<T>) -> Result<CMat<T>> {
-    if a.cols != b.rows {
-        return Err(Error::Dimension(format!(
-            "cannot multiply {}x{} by {}x{}",
-            a.rows, a.cols, b.rows, b.cols
-        )));
-    }
-    let mut out = CMat::<T>::zeros(a.rows, b.cols);
-    for i in 0..a.rows {
-        for k in 0..a.cols {
-            let x = a.get(i, k);
-            if x.re == 0.0 && x.im == 0.0 {
-                continue;
-            }
-            for j in 0..b.cols {
-                let idx = i * b.cols + j;
-                out.data[idx] += mulc(x, b.get(k, j));
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// `a·b` with a constant `f64` right factor.
-pub(crate) fn mat_cf<T: Scalar>(a: &CMat<T>, b: &CMat<f64>) -> Result<CMat<T>> {
-    if a.cols != b.rows {
-        return Err(Error::Dimension(format!(
-            "cannot multiply {}x{} by {}x{}",
-            a.rows, a.cols, b.rows, b.cols
-        )));
-    }
-    let mut out = CMat::<T>::zeros(a.rows, b.cols);
-    for i in 0..a.rows {
-        for k in 0..a.cols {
-            let x = a.get(i, k);
-            for j in 0..b.cols {
-                let y = b.get(k, j);
-                if y.re == 0.0 && y.im == 0.0 {
-                    continue;
-                }
-                out.data[i * b.cols + j] += mulc(y, x);
-            }
-        }
+/// `D[ρ] = Σ_k (L ρ L† − ½{L†L, ρ})`.
+fn dissipator(collapse: &[CMat<f64>], rho: &CMat<f64>) -> Result<CMat<f64>> {
+    let mut out = CMat::<f64>::zeros(rho.rows, rho.cols);
+    for l in collapse {
+        let l_dag = l.adjoint();
+        let l_dag_l = l_dag.matmul(l)?;
+        out = out.add(&l.matmul(rho)?.matmul(&l_dag)?)?;
+        out.axpy_re(-0.5, &l_dag_l.matmul(rho)?.add(&rho.matmul(&l_dag_l)?)?);
     }
     Ok(out)
 }
@@ -182,23 +177,28 @@ impl<'a, T: Scalar> Tape<'a, T> {
         Ok(self.push(Value::C(out), Op::Sandwich(u, rho), &[u, rho]))
     }
 
-    /// One explicit Euler dissipation step, `ρ + dt·D[ρ]`.
-    pub fn lindblad_step(&mut self, rho: Var, ops: &'a LindbladOps, dt: f64) -> Result<Var> {
-        let r = self.value(rho).c("lindblad_step")?;
-        let mut out = r.clone();
-        out.axpy_re(T::from_f64(dt), &ops.dissipator(r, false)?);
-        Ok(self.push(Value::C(out), Op::Lindblad(rho, ops, dt), &[rho]))
+    /// One dissipation step, `exp(dt·D)[ρ]`.
+    pub fn lindblad_step(&mut self, rho: Var, ops: &'a LindbladOps) -> Result<Var> {
+        let out = ops.apply(self.value(rho).c("lindblad_step")?, false)?;
+        Ok(self.push(Value::C(out), Op::Lindblad(rho, ops), &[rho]))
     }
 
-    /// `|⟨target|ψ⟩|²` for column vectors, as a `1 × 1` real.
-    pub fn overlap_sq(&mut self, target: &'a CMat<f64>, psi: Var) -> Result<Var> {
-        let p = self.value(psi).c("overlap_sq")?;
+    /// The fidelity of the evolved columns `Ψ` to the target columns `T`, as a `1 × 1` real.
+    ///
+    /// With `k` columns - the images of `k` orthonormal states - it is the average fidelity over their span,
+    /// `(‖M‖² + |Tr M|²)/(k·(k + 1))` with `M = T†·Ψ`, which counts population leaving the span as lost.  One column
+    /// gives `|⟨t|ψ⟩|²`.
+    pub fn fidelity(&mut self, target: &'a CMat<f64>, psi: Var) -> Result<Var> {
+        let p = self.value(psi).c("fidelity")?;
         if p.shape() != target.shape() {
-            return Err(Error::Dimension("overlap_sq: state and target differ in shape".into()));
+            return Err(Error::Dimension("fidelity: state and target differ in shape".into()));
         }
-        let s = overlap(target, p);
-        let out = RMat::from_vec(1, 1, vec![s.re * s.re + s.im * s.im])?;
-        Ok(self.push(Value::R(out), Op::OverlapSq(target, psi), &[psi]))
+        let m = adjoint_times(target, p);
+        let k = T::from_f64(target.cols as f64);
+        let norm: T = m.data.iter().fold(T::zero(), |acc, z| acc + z.re * z.re + z.im * z.im);
+        let s = m.trace();
+        let out = RMat::from_vec(1, 1, vec![(norm + s.re * s.re + s.im * s.im) / (k * (k + T::one()))])?;
+        Ok(self.push(Value::R(out), Op::Fidelity(target, psi), &[psi]))
     }
 
     /// `Re Tr(ρ·σ)`, as a `1 × 1` real.
@@ -219,12 +219,18 @@ impl<'a, T: Scalar> Tape<'a, T> {
     }
 }
 
-/// `⟨t|p⟩ = Σ conj(t_i)·p_i`.
-fn overlap<T: Scalar>(t: &CMat<f64>, p: &CMat<T>) -> C<T> {
-    t.data
-        .iter()
-        .zip(&p.data)
-        .fold(C::new(T::zero(), T::zero()), |acc, (&a, &b)| acc + mulc(a.conj(), b))
+/// `t†·p` for a constant `t`.
+fn adjoint_times<T: Scalar>(t: &CMat<f64>, p: &CMat<T>) -> CMat<T> {
+    let mut out = CMat::<T>::zeros(t.cols, p.cols);
+    for r in 0..t.rows {
+        for i in 0..t.cols {
+            let a = t.get(r, i).conj();
+            for j in 0..p.cols {
+                out.data[i * p.cols + j] += mulc(a, p.get(r, j));
+            }
+        }
+    }
+    out
 }
 
 // ------------------------------------------------------------------ adjoints ----
@@ -314,20 +320,27 @@ pub(crate) fn sandwich_adjoint<T: Scalar>(
     Ok(vec![(u, Value::C(grad_u)), (rho, Value::C(grad_rho))])
 }
 
-pub(crate) fn lindblad_adjoint<T: Scalar>(ops: &LindbladOps, dt: f64, g: &Value<T>) -> Result<Value<T>> {
-    let g = g.c("lindblad_step")?;
-    let mut out = g.clone();
-    out.axpy_re(T::from_f64(dt), &ops.dissipator(g, true)?);
-    Ok(Value::C(out))
+pub(crate) fn lindblad_adjoint<T: Scalar>(ops: &LindbladOps, g: &Value<T>) -> Result<Value<T>> {
+    Ok(Value::C(ops.apply(g.c("lindblad_step")?, true)?))
 }
 
-pub(crate) fn overlap_sq_adjoint<T: Scalar>(t: &CMat<f64>, psi: &Value<T>, g: &Value<T>) -> Result<Value<T>> {
-    let p = psi.c("overlap_sq")?;
-    let s = overlap(t, p);
-    let scale = g.r("overlap_sq")?.data[0] * T::from_f64(2.0);
-    // ∂|s|²/∂ψ = 2·s·t in the conjugate convention.
-    let s2 = C::new(s.re * scale, s.im * scale);
-    Ok(Value::C(t.map(|v| s2 * liftc(v))))
+pub(crate) fn fidelity_adjoint<T: Scalar>(t: &CMat<f64>, psi: &Value<T>, g: &Value<T>) -> Result<Value<T>> {
+    let m = adjoint_times(t, psi.c("fidelity")?);
+    let s = m.trace();
+    let k = t.cols as f64;
+    let scale = g.r("fidelity")?.data[0] * T::from_f64(2.0 / (k * (k + 1.0)));
+    // In the conjugate convention ∂‖T†Ψ‖²/∂Ψ = 2·T·M and ∂|Tr T†Ψ|²/∂Ψ = 2·s·T.
+    let mut out = CMat::<T>::zeros(t.rows, t.cols);
+    for r in 0..t.rows {
+        for c in 0..t.cols {
+            let mut acc = s * liftc(t.get(r, c));
+            for i in 0..t.cols {
+                acc += mulc(t.get(r, i), m.get(i, c));
+            }
+            out.data[r * t.cols + c] = C::new(acc.re * scale, acc.im * scale);
+        }
+    }
+    Ok(Value::C(out))
 }
 
 pub(crate) fn re_trace_product_adjoint<T: Scalar>(sigma: &CMat<f64>, g: &Value<T>) -> Result<Value<T>> {

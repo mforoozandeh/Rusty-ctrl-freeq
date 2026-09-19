@@ -27,8 +27,10 @@ const PROFILE_POINTS: usize = 400;
 /// Plot data for a finished run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Analysis {
-    /// Time grid in nanoseconds.
+    /// Pulse sample times in nanoseconds: the middle of each time step.
     pub times_ns: Vec<f64>,
+    /// State times in nanoseconds: the step boundaries from 0 to the pulse duration, one more than the samples.
+    pub state_times_ns: Vec<f64>,
     /// One trace per qubit.
     pub pulses: Vec<PulseTrace>,
     /// One per initial state.
@@ -59,7 +61,7 @@ pub struct Dynamics {
     pub initial_state: usize,
     /// A label per component: `ψ1…` for state vectors, `ρ11…` for density matrices.
     pub labels: Vec<String>,
-    /// `[component][t]` as `(re, im)`, under the mean drift (configured offsets and couplings) and maximum Rabi
+    /// `[component][t]` as `(re, im)` at the state times, under the mean drift (configured offsets and couplings) and maximum Rabi
     /// frequencies.
     pub mean: Vec<Vec<[f64; 2]>>,
     /// `[snapshot][component][t]` for up to twenty batch snapshots.
@@ -110,6 +112,7 @@ pub fn analyse(cfg: &Config, result: &RunResult) -> Result<Analysis> {
 
     Ok(Analysis {
         times_ns: p.times.iter().map(|t| t * 1e9).collect(),
+        state_times_ns: (0..=p.n_pulse).map(|t| t as f64 * p.dt * 1e9).collect(),
         pulses,
         dynamics,
         profiles,
@@ -136,10 +139,11 @@ fn controls(p: &Problem, w: &Waveforms, rabi: &[f64]) -> Vec<Vec<f64>> {
         .collect()
 }
 
-/// The state after every step from `initial` under drift `h0` and controls `u`.
+/// `initial` and the state after every step under drift `h0` and controls `u`.
 fn trajectory(p: &Problem, h0: &CMat<f64>, u: &[Vec<f64>], initial: &CMat<f64>) -> Result<Vec<CMat<f64>>> {
     let mut state = initial.clone();
-    let mut out = Vec::with_capacity(p.n_pulse);
+    let mut out = Vec::with_capacity(p.n_pulse + 1);
+    out.push(state.clone());
     for ut in u {
         let mut h = h0.clone();
         for (k, op) in p.control_ops.iter().enumerate() {
@@ -149,12 +153,7 @@ fn trajectory(p: &Problem, h0: &CMat<f64>, u: &[Vec<f64>], initial: &CMat<f64>) 
         state = match &p.evolution {
             Evolution::Hilbert => step.matmul(&state)?,
             Evolution::Liouville => step.matmul(&state)?.matmul(&step.adjoint())?,
-            Evolution::Lindblad(ops) => {
-                let rho = step.matmul(&state)?.matmul(&step.adjoint())?;
-                let mut next = rho.clone();
-                next.axpy_re(p.dt, &ops.dissipator(&rho, false)?);
-                next
-            }
+            Evolution::Lindblad(ops) => ops.apply(&step.matmul(&state)?.matmul(&step.adjoint())?, false)?,
         };
         out.push(state.clone());
     }
@@ -216,10 +215,17 @@ fn dynamics(p: &Problem, w: &Waveforms, mean_drift: &CMat<f64>, i: usize) -> Res
     let initial = &p.initial_states[i];
     let mean_traj = trajectory(p, mean_drift, &controls(p, w, &p.rabi_max), initial)?;
 
-    let elements: Vec<usize> = (0..p.batch.len()).filter(|&b| p.batch[b].initial_index == i).collect();
-    let trajectories = crate::parallel::map(elements.len(), |j| {
-        let e = &p.batch[elements[j]];
-        trajectory(p, &e.h0, &controls(p, w, &e.rabi), &e.initial)
+    // One trajectory from this initial state per drift and Rabi snapshot.  Batch elements do not always start from
+    // it: a gate target evolves the whole computational basis.
+    let mut seen = std::collections::HashSet::new();
+    let snapshots: Vec<_> = p
+        .batch
+        .iter()
+        .filter(|e| seen.insert((e.snapshot, e.rabi_index)))
+        .collect();
+    let trajectories = crate::parallel::map(snapshots.len(), |j| {
+        let e = snapshots[j];
+        trajectory(p, &e.h0, &controls(p, w, &e.rabi), initial)
     })
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
@@ -229,7 +235,7 @@ fn dynamics(p: &Problem, w: &Waveforms, mean_drift: &CMat<f64>, i: usize) -> Res
         (0..p.n_qubits)
             .map(|q| {
                 [0, 1, 2].map(|k| {
-                    (0..p.n_pulse)
+                    (0..=p.n_pulse)
                         .map(|t| {
                             let vals = per_snapshot.iter().map(|s| s[q][k][t]);
                             if pick_min {
@@ -348,6 +354,47 @@ mod tests {
         let psi = CMat::column(last);
         let overlap = target.inner(&psi).norm_sqr();
         assert!((overlap - fid).abs() < 1e-12, "{overlap} vs {fid}");
+    }
+
+    /// States are plotted at the step boundaries, from the initial state at 0 to the final one at T.
+    #[test]
+    fn states_are_timed_at_the_step_boundaries() {
+        let cfg = single();
+        let p = Problem::build_with_seed(&cfg, 3).unwrap();
+        let (n, duration) = (p.n_pulse, p.duration);
+        let a = analyse(&cfg, &result_for(p.x0.clone())).unwrap();
+        assert_eq!(a.state_times_ns.len(), n + 1);
+        assert_eq!(a.state_times_ns[0], 0.0);
+        assert!((a.state_times_ns[n] - duration * 1e9).abs() < 1e-9);
+        let d = &a.dynamics[0];
+        assert!(
+            d.mean
+                .iter()
+                .chain(d.snapshots.iter().flatten())
+                .all(|c| c.len() == n + 1)
+        );
+        assert!(
+            d.observables
+                .iter()
+                .chain(&d.observables_min)
+                .all(|o| o.iter().all(|v| v.len() == n + 1))
+        );
+        // |0>: ψ1 = 1 before the pulse.
+        assert_eq!(d.mean[0][0], [1.0, 0.0]);
+    }
+
+    /// A gate run still plots the configured initial state, under every snapshot.
+    #[test]
+    fn gate_runs_plot_the_configured_initial_states() {
+        let mut cfg = Config::from_json(examples().iter().find(|e| e.0 == "two_qubit_parameters").unwrap().1).unwrap();
+        cfg.optimization.h0_snapshots = 3;
+        cfg.parameters.coverage = vec![crate::config::Coverage::Broadband; 2];
+        let n = Problem::build_with_seed(&cfg, 3).unwrap().n_params();
+        let a = analyse(&cfg, &result_for(vec![0.0; n])).unwrap();
+        let d = &a.dynamics[0];
+        assert_eq!((d.mean.len(), d.snapshots.len()), (4, 3));
+        // |Z, −Z> = |01>: ψ2 = 1 before the pulse, in every snapshot.
+        assert!(d.snapshots.iter().all(|s| s[1][0] == [1.0, 0.0]));
     }
 
     #[test]

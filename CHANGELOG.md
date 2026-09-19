@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+Physics corrections; each is described in `DEVIATIONS.md`.
+
+- Changed: a gate target named for every initial state is scored by the average gate fidelity over the
+  computational basis (leakage and relaxation included), not state by state; different gates per initial state
+  still mean state transfer.
+- Changed: two-level transmons share the three-level model's conventions: qubit frequency `+δ`, exchange hopping
+  `g`, Stark coefficient adding to `δ`.  The ZZ estimate from the anharmonicities has the right sign and includes
+  the detuning, and is refused above a mixing ratio of 0.1 with `|20⟩` and `|02⟩` - a small-mixing heuristic, not
+  an accuracy bound.
+- Changed: waveform samples sit at the middle of each time step; `Analysis::state_times_ns` times the dynamics at
+  the step boundaries, from the initial state.
+- Changed: `band_selective` coverage requires rotation targets; selective axis targets apply qubit by qubit and
+  gates only where every qubit is in its band.
+- Fixed: Lindblad relaxation uses the dissipator's exact channel, so states stay physical and fidelities at most 1.
+- Fixed: gate names are compared canonically, so `CNOT` and `CX` together still ask for the gate.
+- Fixed: a coupling spread with fixed offsets gets every drift snapshot, not one.
+- Fixed: `LindbladOps::new` rejects a negative or non-finite step, which is not a channel.
+- Fixed: selective offsets are shuffled per qubit, so qubits fall in and out of their bands independently.
+- Fixed: leaked three-level population no longer reads +1 on every Pauli axis.
+- Fixed: linearly dependent basis functions are refused instead of completed arbitrarily; two-point pulses no
+  longer produce NaN envelopes.
+
 ## 0.1.0 - 2026-09-19
 
 First release of the Rust port of ctrl-freeq 0.3.0.

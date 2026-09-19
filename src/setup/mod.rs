@@ -2,14 +2,17 @@
 //!
 //! [`Problem::build`] validates the configuration, draws every random quantity from one seeded generator, and
 //! assembles the batch: one element per (initial state, drift snapshot, Rabi snapshot), each with its drift
-//! Hamiltonian, Rabi frequencies, initial state and target.
+//! Hamiltonian, Rabi frequencies, initial state and target.  One gate for every initial state is scored as a gate
+//! instead; [`BatchElement`] says how.
 
 mod dissipation;
 mod sampling;
 mod states;
 
 pub use dissipation::collapse_operators;
-pub use states::{embed, gate, gate_names, pauli_ops, paulis, product_density, product_state, rotation, spin_ops};
+pub use states::{
+    canonical_gate, embed, gate, gate_names, pauli_ops, paulis, product_density, product_state, rotation, spin_ops,
+};
 
 use rand::SeedableRng;
 
@@ -49,22 +52,27 @@ pub enum Evolution {
     Hilbert,
     /// `ρ ← U·ρ·U†`.
     Liouville,
-    /// `ρ ← U·ρ·U†`, then an explicit Euler step of the Lindblad dissipator.
+    /// `ρ ← U·ρ·U†`, then the Lindblad dissipator's exact channel over the step.
     Lindblad(LindbladOps),
 }
 
 /// One batch element.
+///
+/// For state targets it evolves one initial state and scores it against its target.  For one gate
+/// ([`Targets::single_gate`]) it scores the average gate fidelity instead: in Hilbert space one element evolves the
+/// whole computational basis as the columns of `initial`; in Liouville space the elements evolve the Pauli operators,
+/// each scored against the gate's image of it, weighted so the batch mean is Nielsen's average gate fidelity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BatchElement {
     /// Drift Hamiltonian in rad/s.
     pub h0: CMat<f64>,
     /// Rabi frequency per qubit in rad/s.
     pub rabi: Vec<f64>,
-    /// Initial state: a column vector (Hilbert) or a density matrix (Liouville).
+    /// What is evolved: state vectors as columns (Hilbert) or a density matrix or Pauli operator (Liouville).
     pub initial: CMat<f64>,
-    /// Target, of the same kind as `initial`.
+    /// What `initial` is scored against after the pulse, of the same shape.
     pub target: CMat<f64>,
-    /// Which initial state.
+    /// Which initial state, or which Pauli operator for a gate in Liouville space (0 in Hilbert space).
     pub initial_index: usize,
     /// Which drift snapshot.
     pub snapshot: usize,
@@ -84,7 +92,7 @@ pub struct Problem {
     pub dt: f64,
     /// Pulse duration in seconds.
     pub duration: f64,
-    /// Time grid in seconds, `linspace(ε, T, n_pulse)` as in Python.
+    /// Waveform sample times in seconds: the middle of each step, `(t + ½)·dt`.
     pub times: Vec<f64>,
     /// Each qubit's basis matrices.
     pub qubits: Vec<QubitBasis>,
@@ -94,7 +102,7 @@ pub struct Problem {
     pub control_ops: Vec<CMat<f64>>,
     /// How each control amplitude is made.
     pub channels: Vec<ControlChannel>,
-    /// The batch, ordered by initial state, then drift snapshot, then Rabi snapshot.
+    /// The batch, ordered by initial state (or Pauli operator), then drift snapshot, then Rabi snapshot.
     pub batch: Vec<BatchElement>,
     /// State evolution per step.
     pub evolution: Evolution,
@@ -110,9 +118,9 @@ pub struct Problem {
     pub max_iter: usize,
     /// Optimiser name.
     pub algorithm: String,
-    /// Initial states in the model's space, one per configured initial state.
+    /// Initial states in the model's space, one per configured initial state; the plots start from these.
     pub initial_states: Vec<CMat<f64>>,
-    /// Per qubit, the Pauli observables `[σx, σy, σz]` in the model's space.
+    /// Per qubit, the Pauli observables `[σx, σy, σz]` in the model's space, zero outside the computational subspace.
     pub observables: Vec<[CMat<f64>; 3]>,
     /// The Hamiltonian model.
     pub model: Box<dyn HamiltonianModel>,
@@ -158,7 +166,7 @@ impl Problem {
         let duration = p.pulse_duration[0];
         let n_pulse = p.point_in_pulse[0];
         let dt = duration / n_pulse as f64;
-        let times = linspace(f64::EPSILON, duration, n_pulse);
+        let times: Vec<f64> = (0..n_pulse).map(|t| (t as f64 + 0.5) * dt).collect();
 
         // Initial coefficients (all qubits first, as Python draws them), then the bases.
         let bases = p.wf_type.iter().map(|name| basis(name)).collect::<Result<Vec<_>>>()?;
@@ -197,7 +205,15 @@ impl Problem {
                 profile_order: p.profile_order[q],
             })
             .collect();
-        let fixed = p.coverage.iter().all(|&c| c == Coverage::Single) && sigma_delta.iter().all(|&s| s == 0.0);
+        let coupling = match (&p.j, n > 1) {
+            (Some(j), true) => Some(upper_coupling(j, n).map_err(Error::Config)?.map(|v| two_pi * v)),
+            _ => None,
+        };
+        let sigma_j = two_pi * p.sigma_j.unwrap_or(0.0);
+        // One snapshot suffices only when nothing in the drift is uncertain.
+        let fixed = p.coverage.iter().all(|&c| c == Coverage::Single)
+            && sigma_delta.iter().all(|&s| s == 0.0)
+            && (coupling.is_none() || sigma_j == 0.0);
         let per_qubit_offsets: Vec<Vec<f64>> = if fixed {
             delta.iter().map(|&d| vec![d]).collect()
         } else {
@@ -214,11 +230,6 @@ impl Problem {
             .collect();
 
         // Couplings.
-        let coupling = match (&p.j, n > 1) {
-            (Some(j), true) => Some(upper_coupling(j, n).map_err(Error::Config)?.map(|v| two_pi * v)),
-            _ => None,
-        };
-        let sigma_j = two_pi * p.sigma_j.unwrap_or(0.0);
         let couplings = coupling.as_ref().map(|j| coupling_instances(j, sigma_j, m, &mut rng));
 
         // The model and the drifts.
@@ -252,47 +263,75 @@ impl Problem {
         };
         let raw_initials: Vec<CMat<f64>> = cfg.initial_states.iter().map(|a| raw_state(a)).collect::<Result<_>>()?;
         let initial_states: Vec<CMat<f64>> = raw_initials.iter().map(&embed).collect::<Result<_>>()?;
-        let deg = std::f64::consts::PI / 180.0;
-        // targets[p][k]: what initial state p should become at snapshot k.
-        let mut targets: Vec<Vec<CMat<f64>>> = Vec::with_capacity(raw_initials.len());
-        for (pi, init) in raw_initials.iter().enumerate() {
-            let mut row = Vec::with_capacity(m);
-            for (k, &first) in profiles[0].iter().enumerate() {
-                let applies = first == 1.0;
-                let t = match &cfg.target_states {
-                    Targets::Axis(axes) if applies => raw_state(&axes[pi])?,
-                    Targets::Gate(names) if applies => apply(&gate(&names[pi], n)?, init)?,
-                    Targets::PhiBeta { phi, beta } => {
-                        let angles: Vec<f64> = (0..n).map(|q| beta[pi][q] * deg * profiles[q][k]).collect();
-                        apply(&rotation(&phi[pi], &angles, n)?, init)?
-                    }
-                    _ => init.clone(),
-                };
-                row.push(embed(&t)?);
-            }
-            targets.push(row);
-        }
-        if space == Space::Liouville {
-            for t in targets.iter().flatten() {
-                let purity = t.matmul(t)?.trace().re;
-                if (purity - 1.0).abs() > 1e-9 {
-                    return Err(Error::NotSupported(
-                        "Liouville-space fidelity needs pure targets; this target is mixed".into(),
-                    ));
-                }
-            }
-        }
+        // Where a target applies: a qubit is in its band where its excitation profile is 1.
+        let in_band = |q: usize, k: usize| profiles[q][k] == 1.0;
+        let everyone_in_band = |k: usize| (0..n).all(|q| in_band(q, k));
 
-        // The batch: initial state, then drift snapshot, then Rabi snapshot.
-        let mut batch = Vec::with_capacity(initial_states.len() * m * rabi.len());
-        for (pi, init) in initial_states.iter().enumerate() {
+        // Per initial state, what it is scored against at each snapshot: its target state, or for one gate the
+        // gate's action on the whole computational basis (see `gate_rows`).
+        let rows: Vec<Row> = match cfg.target_states.single_gate() {
+            Some(name) => {
+                let v = gate(name, n)?;
+                let id = CMat::<f64>::identity(1 << n);
+                let gates: Vec<&CMat<f64>> = (0..m).map(|k| if everyone_in_band(k) { &v } else { &id }).collect();
+                gate_rows(&gates, space, model.as_ref())?
+            }
+            None => {
+                let deg = std::f64::consts::PI / 180.0;
+                let target = |pi: usize, init: &CMat<f64>, k: usize| -> Result<CMat<f64>> {
+                    let t = match &cfg.target_states {
+                        // A product state: each qubit's target axis in its band, its initial axis elsewhere.
+                        Targets::Axis(axes) => {
+                            let per_qubit: Vec<String> = (0..n)
+                                .map(|q| {
+                                    if in_band(q, k) {
+                                        &axes[pi][q]
+                                    } else {
+                                        &cfg.initial_states[pi][q]
+                                    }
+                                })
+                                .cloned()
+                                .collect();
+                            raw_state(&per_qubit)?
+                        }
+                        Targets::Gate(names) if everyone_in_band(k) => apply(&gate(&names[pi], n)?, init)?,
+                        Targets::Gate(_) => init.clone(),
+                        Targets::PhiBeta { phi, beta } => {
+                            let angles: Vec<f64> = (0..n).map(|q| beta[pi][q] * deg * profiles[q][k]).collect();
+                            apply(&rotation(&phi[pi], &angles, n)?, init)?
+                        }
+                    };
+                    let t = embed(&t)?;
+                    if space == Space::Liouville && (t.matmul(&t)?.trace().re - 1.0).abs() > 1e-9 {
+                        return Err(Error::NotSupported(
+                            "Liouville-space fidelity needs pure targets; this target is mixed".into(),
+                        ));
+                    }
+                    Ok(t)
+                };
+                raw_initials
+                    .iter()
+                    .enumerate()
+                    .map(|(pi, init)| {
+                        Ok(Row {
+                            evolved: embed(init)?,
+                            targets: (0..m).map(|k| target(pi, init, k)).collect::<Result<_>>()?,
+                        })
+                    })
+                    .collect::<Result<_>>()?
+            }
+        };
+
+        // The batch: initial state (or Pauli operator), then drift snapshot, then Rabi snapshot.
+        let mut batch = Vec::with_capacity(rows.len() * m * rabi.len());
+        for (pi, row) in rows.into_iter().enumerate() {
             for (k, h0) in drifts.iter().enumerate() {
                 for (r, rb) in rabi.iter().enumerate() {
                     batch.push(BatchElement {
                         h0: h0.clone(),
                         rabi: rb.clone(),
-                        initial: init.clone(),
-                        target: targets[pi][k].clone(),
+                        initial: row.evolved.clone(),
+                        target: row.targets[k].clone(),
                         initial_index: pi,
                         snapshot: k,
                         rabi_index: r,
@@ -303,7 +342,7 @@ impl Problem {
 
         let evolution = if cfg.is_dissipative() {
             let (t1, t2) = (p.t1.as_deref().unwrap_or(&[]), p.t2.as_deref().unwrap_or(&[]));
-            Evolution::Lindblad(LindbladOps::new(&collapse_operators(t1, t2)?)?)
+            Evolution::Lindblad(LindbladOps::new(&collapse_operators(t1, t2)?, dt)?)
         } else if space == Space::Liouville {
             Evolution::Liouville
         } else {
@@ -314,13 +353,14 @@ impl Problem {
         let modulation = CMat::from_fn(n_pulse, n, |t, q| {
             C::from_polar(1.0, offsets[q] * (times[t] - duration / 2.0))
         });
+        // Projected, zero outside the computational subspace, so leaked population reads as zero on every axis.
         let observables = pauli_ops(n)
             .iter()
             .map(|o| -> Result<[CMat<f64>; 3]> {
                 Ok([
-                    model.embed_gate(&o[0])?,
-                    model.embed_gate(&o[1])?,
-                    model.embed_gate(&o[2])?,
+                    model.embed_density(&o[0])?,
+                    model.embed_density(&o[1])?,
+                    model.embed_density(&o[2])?,
                 ])
             })
             .collect::<Result<Vec<_>>>()?;
@@ -355,6 +395,65 @@ impl Problem {
             n_rabi: rabi.len(),
         })
     }
+}
+
+/// One row of the batch before the drift and Rabi snapshots multiply it.
+struct Row {
+    /// What is evolved.
+    evolved: CMat<f64>,
+    /// Per drift snapshot, what it is scored against.
+    targets: Vec<CMat<f64>>,
+}
+
+/// The rows that score the average gate fidelity to `gates[k]` at drift snapshot `k`.
+///
+/// Hilbert space: one row evolving the embedded computational basis `P`, scored against `P·W` by
+/// `(‖M‖² + |Tr M|²)/(d(d+1))` with `M = (P·W)†·U·P`, which counts leakage (Pedersen et al. 2007).
+///
+/// Liouville space: a row per Pauli string `P_j` (the identity first), scored by `Re Tr(σ_j·Λ(P_j))` against the
+/// scaled image `σ_j = c_j·W·P_j·W†`.  Nielsen's formula, generalised to maps that lose population,
+/// `F = (d·x₀ + Σ_j x_j)/(d²·(d + 1))` with `x_j = Re Tr(W·P_j·W†·Λ(P_j))`, is then the mean over the `d²` rows with
+/// `c₀ = 1` and `c_j = 1/(d + 1)` otherwise.
+fn gate_rows(gates: &[&CMat<f64>], space: Space, model: &dyn HamiltonianModel) -> Result<Vec<Row>> {
+    let d = gates.first().map_or(1, |g| g.rows);
+    match space {
+        Space::Hilbert => Ok(vec![Row {
+            evolved: model.embed_state(&CMat::identity(d))?,
+            targets: gates.iter().map(|w| model.embed_state(w)).collect::<Result<_>>()?,
+        }]),
+        Space::Liouville => pauli_strings(d.trailing_zeros() as usize)
+            .iter()
+            .enumerate()
+            .map(|(j, u)| {
+                let weight = if j == 0 { 1.0 } else { 1.0 / (d + 1) as f64 };
+                let targets = gates
+                    .iter()
+                    .map(|w| {
+                        Ok(model
+                            .embed_density(&w.matmul(u)?.matmul(&w.adjoint())?)?
+                            .scale_re(weight))
+                    })
+                    .collect::<Result<_>>()?;
+                Ok(Row {
+                    evolved: model.embed_density(u)?,
+                    targets,
+                })
+            })
+            .collect(),
+    }
+}
+
+/// The `4ⁿ` Pauli strings on `n` qubits, the identity first: an orthogonal basis, `Tr(P_i·P_j) = 2ⁿ·δ_ij`.
+fn pauli_strings(n: usize) -> Vec<CMat<f64>> {
+    let [x, y, z] = paulis();
+    let single = [CMat::identity(2), x, y, z];
+    (0..1usize << (2 * n))
+        .map(|i| {
+            (0..n)
+                .rev()
+                .fold(CMat::identity(1), |acc, q| acc.kron(&single[(i >> (2 * q)) & 3]))
+        })
+        .collect()
 }
 
 #[cfg(test)]

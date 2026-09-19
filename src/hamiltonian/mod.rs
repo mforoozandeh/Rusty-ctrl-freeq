@@ -78,7 +78,9 @@ pub trait HamiltonianModel: Send + Sync {
         Ok(psi.clone())
     }
 
-    /// A computational-basis density matrix in the model's space.  The identity for two-level models.
+    /// A computational-basis density matrix, or any operator, in the model's space and zero outside the
+    /// computational subspace: `P·ρ·P†`.  Also embeds Pauli operators and plot observables.  The identity for
+    /// two-level models.
     fn embed_density(&self, rho: &CMat<f64>) -> Result<CMat<f64>> {
         Ok(rho.clone())
     }

@@ -124,12 +124,12 @@ fn element_fidelity<'a, T: Scalar>(
             Evolution::Liouville => tape.sandwich(step, state)?,
             Evolution::Lindblad(ops) => {
                 let rho = tape.sandwich(step, state)?;
-                tape.lindblad_step(rho, ops, p.dt)?
+                tape.lindblad_step(rho, ops)?
             }
         };
     }
     match &p.evolution {
-        Evolution::Hilbert => tape.overlap_sq(&e.target, state),
+        Evolution::Hilbert => tape.fidelity(&e.target, state),
         Evolution::Liouville | Evolution::Lindblad(_) => tape.re_trace_product(&e.target, state),
     }
 }

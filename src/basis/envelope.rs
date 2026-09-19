@@ -8,7 +8,8 @@ use crate::error::{Error, Result};
 /// * `hs`: hyperbolic secant of `5.3·x^order`.
 /// * `quad`: `1 − x² + ε`.
 ///
-/// `gn` and `hs` are rescaled to span `[ε, 1]`, ε being the machine epsilon, so no sample is exactly zero.
+/// `gn` and `hs` are rescaled to span `[ε, 1]`, ε being the machine epsilon, so no sample is exactly zero.  Where
+/// every sample has the same value - two points, both at the edges - there is nothing to taper and the envelope is 1.
 pub fn envelope(name: &str, x: &[f64], order: u32) -> Result<Vec<f64>> {
     let n = order as i32;
     let raw: Vec<f64> = match name {
@@ -45,10 +46,13 @@ pub fn envelope_names() -> &'static [&'static str] {
     &["gn", "hs", "quad"]
 }
 
-/// Rescale to `[ε, 1]`: `(e − min)/(max − min)·(1 − ε) + ε`.
+/// Rescale to `[ε, 1]`: `(e − min)/(max − min)·(1 − ε) + ε`, or 1 throughout when `e` is constant.
 fn rescale(e: &[f64]) -> Vec<f64> {
     let min = e.iter().copied().fold(f64::INFINITY, f64::min);
     let max = e.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if max <= min {
+        return vec![1.0; e.len()];
+    }
     let eps = f64::EPSILON;
     e.iter().map(|&v| (v - min) / (max - min) * (1.0 - eps) + eps).collect()
 }
