@@ -7,7 +7,8 @@ own automatic differentiation, and builds for WebAssembly.  The crate is publish
 
 A pulse on each qubit is expanded in a few smooth basis functions.  It is propagated through a batch of drift
 Hamiltonians that sample the uncertainty in offsets, couplings and drive strength, and scored by the mean fidelity
-to a target state, or by the average gate fidelity to a target gate.  An optimiser adjusts the basis coefficients using exact gradients and Hessians.
+to a target state, or by the average gate fidelity to a target gate.  An optimiser adjusts the basis coefficients
+using exact gradients and Hessians.
 
 ## Features
 
@@ -16,12 +17,15 @@ to a target state, or by the average gate fidelity to a target gate.  An optimis
 - **Evolution:** state vectors, density matrices, and Lindblad relaxation with T1 and T2.
 - **Robustness:** offsets sampled per qubit (single, broadband, selective, band-selective), couplings with a
   spread, and several drive strengths.
-- **Targets:** product states, gates (X Y Z H S T, CNOT CZ SWAP iSWAP √iSWAP ECR, Toffoli), or rotations.
+- **Targets:** product states, gates (X Y Z H S T, CNOT CZ SWAP iSWAP √iSWAP ECR, Toffoli) scored by their average
+  gate fidelity, or rotations.
 - **Waveforms:** Cartesian, polar, or phase-only over Chebyshev, Legendre, Fourier, polynomial, Hermite,
   Gegenbauer, chirp or random bases.
 - **Optimisers:** `l-bfgs`, `newton-cg`, `newton-exact`, `cobyla`, `bobyqa`, all with progress reports,
   cancellation and a target-fidelity stop.
 - **Parallel:** batches and Hessians run on all cores, with bit-for-bit identical results on any thread count.
+- **Reporting:** pulses, state dynamics and excitation profiles for the plots, the population leaking out of the
+  computational subspace over time, and each qubit's peak amplitude against its maximum Rabi frequency.
 
 Differences from the Python package are listed in [DEVIATIONS.md](DEVIATIONS.md).
 
@@ -29,7 +33,7 @@ Differences from the Python package are listed in [DEVIATIONS.md](DEVIATIONS.md)
 
 ```toml
 [dependencies]
-ctrl-freeq = "0.1"
+ctrl-freeq = "0.2"
 ```
 
 ```rust

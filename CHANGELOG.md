@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Physics corrections, each described in [DEVIATIONS.md](DEVIATIONS.md).
+## [0.2.0] - 2026-09-21
+
+Corrections to the physics, and the reporting that goes with them.  What still differs from the Python package is
+listed in [DEVIATIONS.md](DEVIATIONS.md).
 
 ### Added
 
@@ -67,5 +70,6 @@ First release of the Rust port of ctrl-freeq 0.3.0.
   convergence, pulse, dynamics and excitation-profile plots, results JSON and waveform CSV export.  The browser
   build runs the optimisation in a Web Worker.
 
-[unreleased]: https://github.com/mforoozandeh/Rusty-ctrl-freeq/compare/v0.1.0...HEAD
+[unreleased]: https://github.com/mforoozandeh/Rusty-ctrl-freeq/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mforoozandeh/Rusty-ctrl-freeq/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mforoozandeh/Rusty-ctrl-freeq/releases/tag/v0.1.0

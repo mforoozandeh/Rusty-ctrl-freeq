@@ -5,8 +5,12 @@
 //!
 //! A control pulse is expanded in a small basis (Chebyshev, Legendre, Fourier, ...), propagated through a batch of
 //! drift Hamiltonians that sample the uncertainty in offsets, couplings and field strength, and scored by the mean
-//! fidelity to a target state or gate.  The optimiser adjusts the basis coefficients; gradients and Hessians come
-//! from the crate's own reverse-mode automatic differentiation.
+//! fidelity to a target state, or by the average gate fidelity to a target gate.  The optimiser adjusts the basis
+//! coefficients; gradients and Hessians come from the crate's own reverse-mode automatic differentiation.
+//!
+//! [`analyse()`] then gives the data the plots need: the pulses, the state dynamics, the excitation profile, and
+//! the population outside the computational subspace.  A run also reports each qubit's peak amplitude as a fraction
+//! of its maximum Rabi frequency, which the cost penalises rather than enforces.
 //!
 //! ## Quick start
 //!

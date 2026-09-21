@@ -1,6 +1,6 @@
 [package]
 name = "ctrl-freeq"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.87"
 description = "Quantum gate and pulse design by optimal control, with automatic differentiation"
