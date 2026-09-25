@@ -50,24 +50,37 @@ fn minimise(name: &str, max_iter: usize, target: f64, sink: &mut dyn ProgressSin
     let mut ctl = RunControl {
         max_iter,
         target_fidelity: target,
+        seed: 11,
         sink,
     };
     opt.minimize(&Rosenbrock, &START, &mut ctl).unwrap()
 }
 
-fn is_gradient_based(name: &str) -> bool {
-    !matches!(name, "cobyla" | "bobyqa")
+/// How accurate an optimiser can be expected to get on Rosenbrock, and how much budget it needs: the
+/// evaluation limit, the tolerance on the objective and the tolerance on the first coordinate.
+///
+/// SPSA has a tier of its own.  It estimates the gradient from two evaluations along one random direction and
+/// damps the step on a fixed schedule, which buys robustness to noise at the cost of a slow rate; on a curved,
+/// ill-conditioned valley it settles around `5e-2` and stays there.  That is the method, not the port: a sweep
+/// of the gain schedule over the ranges Spall and Qiskit recommend does not move it.
+fn accuracy(name: &str) -> (usize, f64, f64) {
+    match name {
+        // COBYLA's linear models crawl along the Rosenbrock valley, so the derivative-free bar is lower.
+        "cobyla" | "bobyqa" | "nelder-mead" | "cma-es" => (5000, 1e-3, 1e-1),
+        "spsa" => (5000, 1e-1, 3.5e-1),
+        _ => (500, 1e-8, 1e-3),
+    }
+}
+
+/// The best fidelity the target-stop test can ask of an optimiser; see [`accuracy`].
+fn reachable_target(name: &str) -> f64 {
+    if name == "spsa" { 0.9 } else { 0.99 }
 }
 
 #[test]
 fn every_optimiser_solves_rosenbrock() {
     for &name in optimizer_names() {
-        // COBYLA's linear models crawl along the Rosenbrock valley, so the derivative-free bar is lower.
-        let (budget, tol, xtol) = if is_gradient_based(name) {
-            (500, 1e-8, 1e-3)
-        } else {
-            (5000, 1e-3, 1e-1)
-        };
+        let (budget, tol, xtol) = accuracy(name);
         let r = minimise(name, budget, 1.0, &mut RecordingSink::default());
         assert!(
             r.eval.cost < tol,
@@ -88,12 +101,13 @@ fn every_optimiser_solves_rosenbrock() {
 fn every_optimiser_stops_at_the_target() {
     for &name in optimizer_names() {
         let mut sink = RecordingSink::default();
-        let r = minimise(name, 5000, 0.99, &mut sink);
+        let target = reachable_target(name);
+        let r = minimise(name, 5000, target, &mut sink);
         assert_eq!(r.exit, Exit::TargetReached, "{name}");
-        assert!(r.eval.score() >= 0.99, "{name}");
+        assert!(r.eval.score() >= target, "{name}");
         let last = sink.reports.last().unwrap();
         assert!(
-            last.fidelity >= 0.99,
+            last.fidelity >= target,
             "{name}: stopped right after the report that reached the target"
         );
     }
@@ -141,8 +155,33 @@ fn every_optimiser_respects_the_iteration_limit() {
     }
 }
 
+/// The optimisers that draw random numbers take them from the run's seed, so a run repeats exactly and a
+/// different seed is a different run.
+#[test]
+fn the_seed_decides_a_stochastic_run() {
+    for name in ["spsa", "cma-es"] {
+        let run = |seed| {
+            let opt = optimizer(name).unwrap();
+            let mut sink = RecordingSink::default();
+            let mut ctl = RunControl {
+                max_iter: 200,
+                target_fidelity: 1.0,
+                seed,
+                sink: &mut sink,
+            };
+            let r = opt.minimize(&Rosenbrock, &START, &mut ctl).unwrap();
+            (r.x, sink.reports.iter().map(|r| r.cost).collect::<Vec<_>>())
+        };
+        assert_eq!(run(3), run(3), "{name}: the same seed gives the same run");
+        assert_ne!(run(3), run(4), "{name}: a different seed gives a different run");
+    }
+}
+
 #[test]
 fn unknown_names_list_the_supported_ones() {
     let err = optimizer("qiskit-spsa").err().unwrap().to_string();
-    assert!(err.contains("l-bfgs, newton-cg, newton-exact, cobyla, bobyqa"), "{err}");
+    assert!(
+        err.contains("l-bfgs, newton-cg, newton-exact, cobyla, bobyqa, nelder-mead, spsa, cma-es"),
+        "{err}"
+    );
 }

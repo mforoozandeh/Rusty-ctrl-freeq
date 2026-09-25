@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Three derivative-free optimisers: `nelder-mead`, the downhill simplex method; `spsa`, simultaneous
+  perturbation stochastic approximation with step-size calibration and blocking; and `cma-es`, the covariance
+  matrix adaptation evolution strategy.  All five derivative-free optimisers now share one box on the
+  parameters and one per-evaluation progress report.
+
+### Changed
+
+- `RunControl` carries the run's `seed`, which `spsa` and `cma-es` draw from so that a seeded run repeats
+  exactly.  Deterministic optimisers ignore it.  This is a breaking change for anything constructing
+  `RunControl` directly.
+
 ## [0.2.0] - 2026-09-21
 
 Corrections to the physics, and the reporting that goes with them.  What still differs from the Python package is

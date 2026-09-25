@@ -12,7 +12,7 @@ mod derivative_free;
 mod gradient;
 mod newton_cg;
 
-pub use derivative_free::{Bobyqa, Cobyla};
+pub use derivative_free::{Bobyqa, CmaEs, Cobyla, NelderMead, Spsa};
 pub use gradient::{LBfgs, NewtonExact};
 pub use newton_cg::NewtonCg;
 
@@ -206,6 +206,9 @@ pub struct RunControl<'a> {
     pub max_iter: usize,
     /// Stop once fidelity minus penalty reaches this.
     pub target_fidelity: f64,
+    /// Seed for the optimisers that draw random numbers, so their runs repeat exactly.  The deterministic
+    /// optimisers ignore it.
+    pub seed: u64,
     /// Where progress goes, and where cancellation comes from.
     pub sink: &'a mut dyn ProgressSink,
 }
@@ -228,6 +231,9 @@ pub fn optimizer(name: &str) -> Result<Box<dyn Optimizer>> {
         "newton-exact" => Box::new(NewtonExact),
         "cobyla" => Box::new(Cobyla),
         "bobyqa" => Box::new(Bobyqa),
+        "nelder-mead" => Box::new(NelderMead),
+        "spsa" => Box::new(Spsa),
+        "cma-es" => Box::new(CmaEs),
         _ => {
             return Err(Error::NotSupported(format!(
                 "algorithm \"{name}\" is not available; choose one of {}",
@@ -239,15 +245,27 @@ pub fn optimizer(name: &str) -> Result<Box<dyn Optimizer>> {
 
 /// Every optimiser name, in the order the interface lists them.
 pub fn optimizer_names() -> &'static [&'static str] {
-    &["l-bfgs", "newton-cg", "newton-exact", "cobyla", "bobyqa"]
+    &[
+        "l-bfgs",
+        "newton-cg",
+        "newton-exact",
+        "cobyla",
+        "bobyqa",
+        "nelder-mead",
+        "spsa",
+        "cma-es",
+    ]
 }
 
 /// Bookkeeping every optimiser shares: progress reports, the stop checks and the best point.
 pub struct Monitor<'s> {
     sink: &'s mut dyn ProgressSink,
     target: f64,
-    max_iter: usize,
     started: Instant,
+    /// The evaluation budget, for optimisers that have to divide it up in advance.
+    pub max_iter: usize,
+    /// The run's seed, for optimisers that draw random numbers.
+    pub seed: u64,
     /// Objective evaluations so far.
     pub evaluations: usize,
     /// The best point evaluated and its value.
@@ -262,6 +280,7 @@ impl<'s> Monitor<'s> {
         Monitor {
             target: ctl.target_fidelity,
             max_iter: ctl.max_iter,
+            seed: ctl.seed,
             sink: &mut *ctl.sink,
             started: Instant::now(),
             evaluations: 0,
@@ -276,6 +295,17 @@ impl<'s> Monitor<'s> {
         if self.best.as_ref().is_none_or(|(_, b)| e.cost < b.cost) {
             self.best = Some((x.to_vec(), e));
         }
+    }
+
+    /// Evaluate `obj` at `x`, count it, keep it if it is the best, and report it as one iteration.  This is the
+    /// derivative-free convention: one iteration is one function evaluation.  The caller stops as soon as
+    /// [`exit`](Self::exit) is set.
+    pub fn evaluate(&mut self, obj: &dyn Objective, x: &[f64]) -> Result<f64> {
+        let e = obj.value(x)?;
+        self.evaluated(x, e);
+        let n = self.evaluations;
+        self.report(n, e, None);
+        Ok(e.cost)
     }
 
     /// Send a report, then check the stop conditions.  `iteration` is compared with the limit.

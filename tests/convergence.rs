@@ -19,6 +19,11 @@ fn the_single_qubit_example_converges_with_every_optimiser() {
     for alg in ctrl_freeq::optim::optimizer_names() {
         let mut cfg = example("single_qubit_parameters");
         cfg.optimization.algorithm = alg.to_string();
+        // The example's 1000 evaluations suit a trust-region method.  SPSA spends three per iteration and
+        // CMA-ES a whole population, so they need a larger budget to reach the same fidelity.
+        if matches!(*alg, "spsa" | "cma-es") {
+            cfg.optimization.max_iter = 5000;
+        }
         let r = run(&cfg, &mut NoProgress).unwrap();
         assert_eq!(r.exit, Exit::TargetReached, "{alg}: F = {}", r.fidelity);
         assert!(r.fidelity - r.penalty >= 0.999, "{alg}");
