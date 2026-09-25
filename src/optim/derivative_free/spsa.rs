@@ -3,7 +3,7 @@
 use rand::{RngExt, SeedableRng};
 
 use super::{bounds, clamp, finish};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::optim::{Derivatives, Exit, Monitor, Objective, OptimResult, Optimizer, RunControl};
 use crate::setup::Rng;
 
@@ -60,6 +60,9 @@ impl Optimizer for Spsa {
     }
 
     fn minimize(&self, obj: &dyn Objective, x0: &[f64], ctl: &mut RunControl) -> Result<OptimResult> {
+        if x0.is_empty() {
+            return Err(Error::NotSupported("SPSA needs at least one parameter".into()));
+        }
         finish(Monitor::new(ctl), |m| search(obj, x0, m))
     }
 }
@@ -99,6 +102,13 @@ fn search(obj: &dyn Objective, x0: &[f64], m: &mut Monitor) -> Result<Exit> {
         Ok(Some((f_plus - f_minus) / (2.0 * c)))
     };
 
+    // Blocking needs the objective at the starting point.  Spend it first, so a start that already meets the
+    // target stops the run here rather than after fifty calibration evaluations.
+    let mut f_x = m.evaluate(obj, &x)?;
+    if m.exit.is_some() {
+        return Ok(Exit::Converged);
+    }
+
     // Calibration: the mean magnitude of the finite difference at the starting point sets the step size, so
     // that the first step moves the parameters by about `TARGET_STEP` whatever the objective's units are.
     let mut magnitude = 0.0;
@@ -118,7 +128,6 @@ fn search(obj: &dyn Objective, x0: &[f64], m: &mut Monitor) -> Result<Exit> {
         TARGET_STEP
     } * (stability + 1.0).powf(ALPHA);
 
-    let mut f_x = m.evaluate(obj, &x)?;
     let mut k = 0u64;
     while m.exit.is_none() {
         let a_k = a / (stability + k as f64 + 1.0).powf(ALPHA);

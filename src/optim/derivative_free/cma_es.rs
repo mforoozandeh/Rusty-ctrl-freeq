@@ -5,7 +5,7 @@ use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
 
 use super::{bounds, clamp, finish};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::optim::{Derivatives, Exit, Monitor, Objective, OptimResult, Optimizer, RunControl};
 use crate::setup::Rng;
 
@@ -32,6 +32,9 @@ impl Optimizer for CmaEs {
     }
 
     fn minimize(&self, obj: &dyn Objective, x0: &[f64], ctl: &mut RunControl) -> Result<OptimResult> {
+        if x0.is_empty() {
+            return Err(Error::NotSupported("CMA-ES needs at least one parameter".into()));
+        }
         finish(Monitor::new(ctl), |m| search(obj, x0, m))
     }
 }
@@ -118,7 +121,7 @@ impl Shape {
 }
 
 fn search(obj: &dyn Objective, x0: &[f64], m: &mut Monitor) -> Result<Exit> {
-    let s = Strategy::new(x0.len().max(1));
+    let s = Strategy::new(x0.len());
     let (lower, upper) = bounds(x0);
     let mut rng = Rng::seed_from_u64(m.seed);
     let normal = Normal::new(0.0, 1.0).expect("a unit normal is well formed");
@@ -128,10 +131,19 @@ fn search(obj: &dyn Objective, x0: &[f64], m: &mut Monitor) -> Result<Exit> {
     let mut path_c = DVector::zeros(s.n);
     let mut path_s = DVector::zeros(s.n);
     let mut shape = Shape::identity(s.n);
-    // The decomposition only has to keep up with the covariance update, so it is redone every so many
-    // evaluations rather than every generation.
+    // The decomposition only has to keep up with the covariance update, so it is redone every so many samples
+    // rather than every generation.  Both this and the path length below count the samples drawn, which is
+    // `generations * lambda`; the evaluation the monitor spends on the starting point is not one of them.
     let stale_after = (0.5 / ((s.c1 + s.cmu) * s.n as f64)).max(1.0);
     let mut decomposed_at = 0.0;
+    let mut generations = 0usize;
+
+    // The distribution is centred on the starting point, so that point is the first candidate.  Without this
+    // a start that already meets the target would be thrown away in favour of a sample drawn around it.
+    m.evaluate(obj, x0)?;
+    if m.exit.is_some() {
+        return Ok(Exit::Converged);
+    }
 
     loop {
         // One generation: sample, clamp into the box and evaluate.
@@ -148,6 +160,7 @@ fn search(obj: &dyn Objective, x0: &[f64], m: &mut Monitor) -> Result<Exit> {
             }
         }
         population.sort_by(|a, b| a.1.total_cmp(&b.1));
+        generations += 1;
 
         // Recombination: the new mean is the weighted average of the best `mu` samples.
         let old_mean = mean.clone();
@@ -159,8 +172,7 @@ fn search(obj: &dyn Objective, x0: &[f64], m: &mut Monitor) -> Result<Exit> {
 
         // Step-size path: how far the mean has travelled, measured in the sphere `c^(-1/2)` maps to.
         path_s = (1.0 - s.cs) * &path_s + (s.cs * (2.0 - s.cs) * s.mueff).sqrt() * (&shape.inv_sqrt_c * &displacement);
-        let evaluations = m.evaluations as f64;
-        let expected = (1.0 - (1.0 - s.cs).powf(2.0 * evaluations / s.lambda as f64)).sqrt();
+        let expected = (1.0 - (1.0 - s.cs).powf(2.0 * generations as f64)).sqrt();
         // Stall the rank-one update while the path is unusually long, so a run of aligned steps does not make
         // the covariance grow along with the step size.
         let hsig = path_s.norm() / expected / s.chin < 1.4 + 2.0 / (s.n as f64 + 1.0);
@@ -182,8 +194,9 @@ fn search(obj: &dyn Objective, x0: &[f64], m: &mut Monitor) -> Result<Exit> {
             return Ok(Exit::Converged);
         }
 
-        if evaluations - decomposed_at > stale_after {
-            decomposed_at = evaluations;
+        let samples = (generations * s.lambda) as f64;
+        if samples - decomposed_at > stale_after {
+            decomposed_at = samples;
             shape.decompose();
         }
         // The distribution has collapsed, or the generation could not tell its members apart.

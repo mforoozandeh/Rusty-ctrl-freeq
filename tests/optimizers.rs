@@ -5,9 +5,11 @@
 
 use ctrl_freeq::Result;
 use ctrl_freeq::optim::{
-    Eval, Exit, IterationReport, Objective, ProgressSink, RecordingSink, RunControl, optimizer, optimizer_names,
+    Eval, Exit, IterationReport, NoProgress, Objective, ProgressSink, RecordingSink, RunControl, optimizer,
+    optimizer_names,
 };
 use nalgebra::DMatrix;
+use std::sync::Mutex;
 
 struct Rosenbrock;
 
@@ -110,6 +112,94 @@ fn every_optimiser_stops_at_the_target() {
             last.fidelity >= target,
             "{name}: stopped right after the report that reached the target"
         );
+    }
+}
+
+/// `cost = |x|^2`, so the origin is already a perfect solution.  Records every point it is asked about.
+#[derive(Default)]
+struct Quadratic {
+    seen: Mutex<Vec<Vec<f64>>>,
+}
+
+impl Objective for Quadratic {
+    fn dim(&self) -> usize {
+        2
+    }
+    fn value(&self, x: &[f64]) -> Result<Eval> {
+        self.seen.lock().unwrap().push(x.to_vec());
+        Ok(eval(x.iter().map(|v| v * v).sum()))
+    }
+    fn gradient(&self, x: &[f64]) -> Result<(Eval, Vec<f64>)> {
+        Ok((self.value(x)?, x.iter().map(|v| 2.0 * v).collect()))
+    }
+    fn hessian(&self, x: &[f64]) -> Result<(Eval, Vec<f64>, DMatrix<f64>)> {
+        let (e, g) = self.gradient(x)?;
+        Ok((e, g, DMatrix::identity(2, 2) * 2.0))
+    }
+}
+
+/// A starting point that already meets the target ends the run where it stands.  Nothing may sample around it
+/// first: a stochastic optimiser that calibrates or draws a population before looking at what it was given
+/// throws away a solution it was handed.
+#[test]
+fn every_optimiser_stops_at_a_starting_point_that_already_meets_the_target() {
+    for &name in optimizer_names() {
+        let mut sink = RecordingSink::default();
+        let opt = optimizer(name).unwrap();
+        let mut ctl = RunControl {
+            max_iter: 20,
+            target_fidelity: 1.0,
+            seed: 11,
+            sink: &mut sink,
+        };
+        let obj = Quadratic::default();
+        let r = opt.minimize(&obj, &[0.0, 0.0], &mut ctl).unwrap();
+        assert_eq!(r.exit, Exit::TargetReached, "{name}: fidelity {}", r.eval.fidelity);
+        assert_eq!(r.x, vec![0.0, 0.0], "{name}: came back with a point it was not given");
+        assert_eq!(sink.reports.len(), 1, "{name}: no reports after the target");
+        // How many evaluations a solver spends on one point is its own business - argmin's initialisation
+        // asks for the value and the gradient separately.  What matters is that none of them went elsewhere.
+        let seen = obj.seen.into_inner().unwrap();
+        assert!(
+            seen.iter().all(|x| x == &[0.0, 0.0]),
+            "{name}: evaluated something other than the starting point: {seen:?}"
+        );
+    }
+}
+
+/// Cancelled at its very first report, a run still comes back with the point it started from.
+#[test]
+fn every_optimiser_cancels_on_its_first_report() {
+    for &name in optimizer_names() {
+        let mut sink = CancelAfter { n: 1, seen: Vec::new() };
+        let r = minimise(name, 5000, 2.0, &mut sink);
+        assert_eq!(r.exit, Exit::Cancelled, "{name}");
+        assert_eq!(sink.seen.len(), 1, "{name}: no reports after the cancel");
+        assert_eq!(r.x, START, "{name}: the first report was not the starting point");
+        assert_eq!(
+            r.eval.cost,
+            rosen(&r.x),
+            "{name}: the returned value belongs to the returned point"
+        );
+    }
+}
+
+/// An optimiser with nothing to vary says so, rather than failing somewhere inside its own linear algebra.
+#[test]
+fn the_derivative_free_optimisers_refuse_an_empty_start() {
+    for name in ["nelder-mead", "spsa", "cma-es"] {
+        let opt = optimizer(name).unwrap();
+        let mut ctl = RunControl {
+            max_iter: 20,
+            target_fidelity: 1.0,
+            seed: 11,
+            sink: &mut NoProgress,
+        };
+        let err = opt
+            .minimize(&Quadratic::default(), &[], &mut ctl)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("at least one parameter"), "{name}: {err}");
     }
 }
 
