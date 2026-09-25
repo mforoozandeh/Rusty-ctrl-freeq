@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A run that stops on the optimiser's own convergence test now reports "converged short of the target fidelity"
+  rather than "converged", so the interface no longer announces a stalled run as a success.  A best point that
+  meets the target is reported as target reached even when the optimiser stopped on its convergence test: the
+  point can come from a line-search trial that no reported iteration saw.
+
 ## [0.2.0] - 2026-09-21
 
 Corrections to the physics, and the reporting that goes with them.  What still differs from the Python package is

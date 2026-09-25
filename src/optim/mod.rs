@@ -162,7 +162,7 @@ impl ProgressSink for ConsoleSink {
 pub enum Exit {
     /// Fidelity minus penalty reached the target.
     TargetReached,
-    /// The optimiser met its own convergence test.
+    /// The optimiser met its own convergence test without reaching the target fidelity.
     Converged,
     /// The iteration limit was reached.
     MaxIterations,
@@ -177,7 +177,7 @@ impl Exit {
     pub fn message(&self) -> String {
         match self {
             Exit::TargetReached => "target fidelity reached".into(),
-            Exit::Converged => "converged".into(),
+            Exit::Converged => "converged short of the target fidelity".into(),
             Exit::MaxIterations => "iteration limit reached".into(),
             Exit::Cancelled => "cancelled".into(),
             Exit::Failed(m) => format!("stopped: {m}"),
@@ -302,15 +302,23 @@ impl<'s> Monitor<'s> {
     }
 
     /// The result: the best point, with `exit` unless a stop condition fired first.
+    ///
+    /// A best point that meets the target is reported as [`Exit::TargetReached`] even when the optimiser stopped
+    /// on its own convergence test, so [`Exit::Converged`] always means what its message says: the run stopped
+    /// short of the target.  The best point can come from a line-search trial no reported iteration saw.
     pub fn finish(self, iterations: usize, exit: Exit) -> Result<OptimResult> {
         let exit = self.exit.unwrap_or(exit);
+        let target = self.target;
         match self.best {
             Some((x, eval)) => Ok(OptimResult {
+                exit: match exit {
+                    Exit::Converged if eval.score() >= target => Exit::TargetReached,
+                    other => other,
+                },
                 x,
                 eval,
                 iterations,
                 evaluations: self.evaluations,
-                exit,
             }),
             None => Err(match exit {
                 Exit::Failed(m) => Error::Numerical(m),

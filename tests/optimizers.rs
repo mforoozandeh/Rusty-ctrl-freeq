@@ -5,7 +5,8 @@
 
 use ctrl_freeq::Result;
 use ctrl_freeq::optim::{
-    Eval, Exit, IterationReport, Objective, ProgressSink, RecordingSink, RunControl, optimizer, optimizer_names,
+    Eval, Exit, IterationReport, Monitor, NoProgress, Objective, ProgressSink, RecordingSink, RunControl, optimizer,
+    optimizer_names,
 };
 use nalgebra::DMatrix;
 
@@ -139,6 +140,41 @@ fn every_optimiser_respects_the_iteration_limit() {
         let last = sink.reports.last().unwrap().iteration;
         assert_eq!(last, 20, "{name}");
     }
+}
+
+/// A run that stops on its own convergence test says it fell short, rather than reporting plain success.
+#[test]
+fn stopping_short_of_the_target_says_so() {
+    // Nothing on the Rosenbrock scores above 1, so no optimiser can reach this target.
+    let mut converged = 0;
+    for &name in optimizer_names() {
+        let r = minimise(name, 5000, 1.5, &mut RecordingSink::default());
+        assert!(r.eval.score() < 1.5, "{name}");
+        if r.exit == Exit::Converged {
+            converged += 1;
+            let m = r.exit.message();
+            assert!(m.contains("short of the target"), "{name}: {m}");
+        } else {
+            assert_eq!(r.exit, Exit::MaxIterations, "{name}");
+        }
+    }
+    assert!(converged > 0, "no optimiser exercised the converged-short wording");
+}
+
+/// The best point can come from a line-search trial no iteration reported, so the exit follows the point.
+#[test]
+fn a_best_point_that_meets_the_target_is_not_called_converged() {
+    let mut sink = NoProgress;
+    let mut ctl = RunControl {
+        max_iter: 10,
+        target_fidelity: 0.5,
+        sink: &mut sink,
+    };
+    let mut monitor = Monitor::new(&mut ctl);
+    monitor.evaluated(&[0.0, 0.0], eval(0.25));
+    let r = monitor.finish(1, Exit::Converged).unwrap();
+    assert_eq!(r.exit, Exit::TargetReached);
+    assert_eq!(r.exit.message(), "target fidelity reached");
 }
 
 #[test]
