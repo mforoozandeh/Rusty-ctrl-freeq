@@ -432,7 +432,7 @@ fn optimisation(ui: &mut Ui, cfg: &mut Config, platform: Platform) {
                 ui.end_row();
                 ui.label("Iteration limit");
                 ui.add(DragValue::new(&mut o.max_iter).range(1..=100_000))
-                    .on_hover_text("Function evaluations for cobyla and bobyqa");
+                    .on_hover_text("Function evaluations for the derivative-free optimisers");
                 ui.end_row();
                 ui.label("Target fidelity");
                 ui.add(

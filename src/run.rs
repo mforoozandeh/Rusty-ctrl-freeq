@@ -106,6 +106,7 @@ pub fn run(cfg: &Config, sink: &mut dyn ProgressSink) -> Result<RunResult> {
     let mut ctl = RunControl {
         max_iter: cfg.optimization.max_iter,
         target_fidelity: cfg.optimization.targ_fid,
+        seed,
         sink: &mut history,
     };
     let result = opt.minimize(&model, &x0, &mut ctl)?;

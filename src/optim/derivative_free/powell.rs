@@ -1,45 +1,23 @@
-//! Derivative-free optimisers: COBYLA and BOBYQA.
+//! COBYLA and BOBYQA, Powell's trust-region methods.
 //!
 //! Both run to completion inside a single call, so the stop checks live in the objective wrapper: once a stop is
 //! due, COBYLA's force-stop flag is raised, and BOBYQA is handed a value below its target, which it treats as
-//! success.  One iteration is one function evaluation, as in the Python package.
+//! success.
 
 use std::cell::{Cell, RefCell};
 
-use super::{Derivatives, Exit, Monitor, Objective, OptimResult, Optimizer, RunControl};
+use super::{bounds, failed};
 use crate::error::{Error, Result};
-
-/// Half-width of the box the parameters are kept in.  Basis coefficients stay far inside it; derivative-free
-/// solvers need a finite box.
-const BOX: f64 = 100.0;
-
-fn bounds(x0: &[f64]) -> (Vec<f64>, Vec<f64>) {
-    let half = x0.iter().fold(BOX, |m, v| m.max(2.0 * v.abs()));
-    (vec![-half; x0.len()], vec![half; x0.len()])
-}
+use crate::optim::{Derivatives, Exit, Monitor, Objective, OptimResult, Optimizer, RunControl};
 
 /// Evaluate, record and report one point; `Err` is remembered and ends the run.
 fn step(monitor: &mut Monitor, error: &mut Option<Error>, obj: &dyn Objective, x: &[f64]) -> Option<f64> {
-    match obj.value(x) {
-        Ok(e) => {
-            monitor.evaluated(x, e);
-            let n = monitor.evaluations;
-            monitor.report(n, e, None);
-            Some(e.cost)
-        }
+    match monitor.evaluate(obj, x) {
+        Ok(cost) => Some(cost),
         Err(err) => {
             *error = Some(err);
             None
         }
-    }
-}
-
-fn failed(monitor: Monitor, error: Error) -> Result<OptimResult> {
-    let n = monitor.evaluations;
-    if monitor.best.is_some() {
-        monitor.finish(n, Exit::Failed(error.to_string()))
-    } else {
-        Err(error)
     }
 }
 
@@ -60,7 +38,7 @@ impl Optimizer for Cobyla {
         let (lower, upper) = bounds(x0);
         let stop = Cell::new(0);
         let state = RefCell::new((Monitor::new(ctl), None::<Error>));
-        let (status, _, _) = super::cobyla::minimize(
+        let (status, _, _) = crate::optim::cobyla::minimize(
             |x| {
                 let mut guard = state.borrow_mut();
                 let (monitor, error) = &mut *guard;
@@ -83,8 +61,8 @@ impl Optimizer for Cobyla {
         }
         let n = monitor.evaluations;
         let exit = match status {
-            super::cobyla::Status::Failed(m) => Exit::Failed(m.into()),
-            super::cobyla::Status::MaxEvalReached => Exit::MaxIterations,
+            crate::optim::cobyla::Status::Failed(m) => Exit::Failed(m.into()),
+            crate::optim::cobyla::Status::MaxEvalReached => Exit::MaxIterations,
             _ => Exit::Converged,
         };
         monitor.finish(n, exit)

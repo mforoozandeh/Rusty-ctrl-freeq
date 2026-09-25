@@ -21,8 +21,9 @@ using exact gradients and Hessians.
   gate fidelity, or rotations.
 - **Waveforms:** Cartesian, polar, or phase-only over Chebyshev, Legendre, Fourier, polynomial, Hermite,
   Gegenbauer, chirp or random bases.
-- **Optimisers:** `l-bfgs`, `newton-cg`, `newton-exact`, `cobyla`, `bobyqa`, all with progress reports,
-  cancellation and a target-fidelity stop.
+- **Optimisers:** gradient-based `l-bfgs`, `newton-cg`, `newton-exact`; derivative-free `cobyla`, `bobyqa`,
+  `nelder-mead`, `spsa`, `cma-es`.  All report progress, can be cancelled and stop at a target fidelity; the
+  stochastic ones take the run's seed, so their runs repeat exactly.
 - **Parallel:** batches and Hessians run on all cores, with bit-for-bit identical results on any thread count.
 - **Reporting:** pulses, state dynamics and excitation profiles for the plots, the population leaking out of the
   computational subspace over time, and each qubit's peak amplitude against its maximum Rabi frequency.
