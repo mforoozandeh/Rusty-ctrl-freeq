@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The interface takes, shows and plots quantities in SI units, Hz and s, as the JSON file stores them, instead of
+  MHz, ns and µs.  Numbers from 0.001 to 99999 are written out and others in scientific notation (`2e-7 s`,
+  `4e7 Hz`), either form can be typed, and a field drags by half a percent of its value, so nanosecond and
+  millisecond pulses are set up alike.  The CSV and JSON exports are unchanged.
+- The mouse wheel over a plot in the interface scrolls the results instead of panning the plot, which left the plot
+  showing a window that no longer fitted its data, and kept it when the data changed.  Dragging still pans and a
+  double click fits the plot again.
 - A run that stops on the optimiser's own convergence test now reports "converged short of the target fidelity"
   rather than "converged", so the interface no longer announces a stalled run as a success.  A best point that
   meets the target is reported as target reached even when the optimiser stopped on its convergence test: the

@@ -11,6 +11,7 @@ pub mod app;
 pub mod edit;
 pub mod export;
 pub mod inputs;
+pub mod numbers;
 pub mod outputs;
 pub mod platform;
 pub mod presets;

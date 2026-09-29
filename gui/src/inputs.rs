@@ -1,6 +1,7 @@
 //! The left panel: every field of the configuration, grouped as the Python GUI groups them.
 //!
-//! Values are stored in SI units, as in the JSON file, and shown in the units people think in - MHz, ns, µs.
+//! Values are stored, shown and typed in SI units, as in the JSON file: Hz and s, written as [`numbers::format`]
+//! writes them, so that a nanosecond pulse and a millisecond one are edited alike.
 
 use ctrl_freeq::basis::{basis_names, envelope_names};
 use ctrl_freeq::config::{Config, Coverage, ROTATION_AXES, STATE_AXES, Space, Targets, WaveformMode};
@@ -10,11 +11,9 @@ use ctrl_freeq::setup::gate_names;
 use eframe::egui::{self, DragValue, RichText, Ui};
 
 use crate::edit::{self, TargetMethod, coupling_types};
+use crate::numbers;
 use crate::platform::Platform;
 
-const MHZ: f64 = 1e6;
-const NS: f64 = 1e-9;
-const US: f64 = 1e-6;
 /// Most qubits the interface offers: the state space grows as 2ⁿ (3ⁿ for transmons with leakage).
 const MAX_QUBITS: usize = 4;
 /// In the browser everything runs on one thread, so the ceiling is lower.
@@ -46,15 +45,29 @@ pub fn show(ui: &mut Ui, cfg: &mut Config, platform: Platform) {
     optimisation(ui, cfg, platform);
 }
 
-/// A number stored in SI units, edited in `scale` units.
-fn scaled(ui: &mut Ui, value: &mut f64, scale: f64, suffix: &str) -> egui::Response {
-    let mut shown = *value / scale;
-    let speed = (shown.abs() * 0.01).max(0.01);
-    let r = ui.add(DragValue::new(&mut shown).speed(speed).max_decimals(6).suffix(suffix));
-    if r.changed() {
-        *value = shown * scale;
-    }
-    r
+/// A drag-or-type field for a quantity in SI `unit`s, shown and read as [`numbers::format`] writes it, so `4e7` and
+/// `2e-7` can be typed.
+///
+/// Dragging moves the value by half a percent of itself per point, so a nanosecond and a millisecond pulse drag
+/// alike; `at_zero` is the step while the value is zero.
+fn si(ui: &mut Ui, value: &mut f64, unit: &str, at_zero: f64) -> egui::Response {
+    let speed = if *value == 0.0 { at_zero } else { value.abs() * 0.005 };
+    ui.add(
+        DragValue::new(value)
+            .speed(speed)
+            .suffix(format!(" {unit}"))
+            .custom_formatter(|v, _| numbers::format(v)),
+    )
+}
+
+/// A frequency in Hz; from zero it drags a kilohertz at a time.
+fn hz(ui: &mut Ui, value: &mut f64) -> egui::Response {
+    si(ui, value, "Hz", 1e3)
+}
+
+/// A time in seconds; from zero it drags a nanosecond at a time.
+fn seconds(ui: &mut Ui, value: &mut f64) -> egui::Response {
+    si(ui, value, "s", 1e-9)
 }
 
 fn combo<T: Clone + PartialEq>(
@@ -170,7 +183,7 @@ fn pulse(ui: &mut Ui, cfg: &mut Config) {
                 let mut duration = cfg.parameters.pulse_duration.first().copied().unwrap_or(2e-7);
                 let mut points = cfg.parameters.point_in_pulse.first().copied().unwrap_or(100);
                 ui.label("Duration");
-                let a = scaled(ui, &mut duration, NS, " ns").changed();
+                let a = seconds(ui, &mut duration).changed();
                 ui.end_row();
                 ui.label("Time steps");
                 let b = ui.add(DragValue::new(&mut points).range(2..=2000)).changed();
@@ -206,17 +219,11 @@ fn qubits(ui: &mut Ui, cfg: &mut Config) {
                     }
                     ui.end_row();
 
-                    row(ui, "Offset Δ", n, |ui, q| drop(scaled(ui, &mut delta[q], MHZ, " MHz")));
+                    row(ui, "Offset Δ", n, |ui, q| drop(hz(ui, &mut delta[q])));
                     let sigma = p.sigma_delta.get_or_insert_with(|| vec![0.0; n]);
-                    row(ui, "Offset spread σΔ", n, |ui, q| {
-                        drop(scaled(ui, &mut sigma[q], MHZ, " MHz"))
-                    });
-                    row(ui, "Rabi frequency", n, |ui, q| {
-                        drop(scaled(ui, &mut p.omega_r_max[q], MHZ, " MHz"))
-                    });
-                    row(ui, "Rabi spread", n, |ui, q| {
-                        drop(scaled(ui, &mut p.sigma_omega_r_max[q], MHZ, " MHz"))
-                    });
+                    row(ui, "Offset spread σΔ", n, |ui, q| drop(hz(ui, &mut sigma[q])));
+                    row(ui, "Rabi frequency", n, |ui, q| drop(hz(ui, &mut p.omega_r_max[q])));
+                    row(ui, "Rabi spread", n, |ui, q| drop(hz(ui, &mut p.sigma_omega_r_max[q])));
                     row(ui, "Basis", n, |ui, q| {
                         string_combo(ui, ("basis", q), &mut p.wf_type[q], basis_names())
                     });
@@ -238,16 +245,10 @@ fn qubits(ui: &mut Ui, cfg: &mut Config) {
                         let options: Vec<(Coverage, &str)> = Coverage::ALL.iter().map(|c| (*c, c.name())).collect();
                         combo(ui, ("coverage", q), &mut p.coverage[q], &options);
                     });
-                    row(ui, "Sweep width", n, |ui, q| {
-                        drop(scaled(ui, &mut p.sw[q], MHZ, " MHz"))
-                    });
-                    row(ui, "Carrier offset", n, |ui, q| {
-                        drop(scaled(ui, &mut p.pulse_offset[q], MHZ, " MHz"))
-                    });
+                    row(ui, "Sweep width", n, |ui, q| drop(hz(ui, &mut p.sw[q])));
+                    row(ui, "Carrier offset", n, |ui, q| drop(hz(ui, &mut p.pulse_offset[q])));
                     if selective {
-                        row(ui, "Band width", n, |ui, q| {
-                            drop(scaled(ui, &mut p.pulse_bandwidth[q], MHZ, " MHz"))
-                        });
+                        row(ui, "Band width", n, |ui, q| drop(hz(ui, &mut p.pulse_bandwidth[q])));
                         row(ui, "Fraction outside band", n, |ui, q| {
                             drop(ui.add(DragValue::new(&mut p.ratio_factor[q]).range(0.0..=1.0).speed(0.01)))
                         });
@@ -259,15 +260,13 @@ fn qubits(ui: &mut Ui, cfg: &mut Config) {
                     }
                     if dissipative {
                         let t1 = p.t1.get_or_insert_with(|| vec![1e-3; n]);
-                        row(ui, "T1", n, |ui, q| drop(scaled(ui, &mut t1[q], US, " µs")));
+                        row(ui, "T1", n, |ui, q| drop(seconds(ui, &mut t1[q])));
                         let t2 = p.t2.get_or_insert_with(|| vec![5e-4; n]);
-                        row(ui, "T2", n, |ui, q| drop(scaled(ui, &mut t2[q], US, " µs")));
+                        row(ui, "T2", n, |ui, q| drop(seconds(ui, &mut t2[q])));
                     }
                     if matches!(model.as_deref(), Some("superconducting" | "duffing_transmon")) {
                         let alpha = p.anharmonicities.get_or_insert_with(|| vec![-330e6; n]);
-                        row(ui, "Anharmonicity", n, |ui, q| {
-                            drop(scaled(ui, &mut alpha[q], MHZ, " MHz"))
-                        });
+                        row(ui, "Anharmonicity", n, |ui, q| drop(hz(ui, &mut alpha[q])));
                     }
                     if model.as_deref() == Some("superconducting") {
                         ui.label("AC Stark shift");
@@ -278,7 +277,13 @@ fn qubits(ui: &mut Ui, cfg: &mut Config) {
                         ui.end_row();
                         if let Some(s) = &mut p.stark_shift_coeffs {
                             row(ui, "Stark coefficient", n, |ui, q| {
-                                drop(ui.add(DragValue::new(&mut s[q]).speed(1e-11).max_decimals(12)))
+                                drop(
+                                    ui.add(
+                                        DragValue::new(&mut s[q])
+                                            .speed(1e-11)
+                                            .custom_formatter(|v, _| numbers::format(v)),
+                                    ),
+                                )
                             });
                         }
                     }
@@ -312,7 +317,7 @@ fn coupling(ui: &mut Ui, cfg: &mut Config) {
             ui.separator();
             ui.label("Spread σJ");
             let s = p.sigma_j.get_or_insert(0.0);
-            scaled(ui, s, MHZ, " MHz");
+            hz(ui, s);
         });
         ui.label("Couplings J (upper triangle)");
         let j = p.j.get_or_insert_with(|| vec![vec![0.0; n]; n]);
@@ -332,7 +337,7 @@ fn coupling(ui: &mut Ui, cfg: &mut Config) {
     });
 }
 
-/// Edit the upper triangle of an `n × n` matrix in MHz.  A value given in the lower triangle is moved up.
+/// Edit the upper triangle of an `n × n` matrix in Hz.  A value given in the lower triangle is moved up.
 #[allow(clippy::needless_range_loop)] // entries (r, c) and (c, r) are read together
 fn matrix(ui: &mut Ui, id: &str, m: &mut [Vec<f64>], n: usize) {
     egui::Grid::new(id)
@@ -352,7 +357,7 @@ fn matrix(ui: &mut Ui, id: &str, m: &mut [Vec<f64>], n: usize) {
                             m[r][c] = m[c][r];
                             m[c][r] = 0.0;
                         }
-                        scaled(ui, &mut m[r][c], MHZ, " MHz");
+                        hz(ui, &mut m[r][c]);
                     } else {
                         ui.label("");
                     }

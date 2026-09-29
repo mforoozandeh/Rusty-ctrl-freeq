@@ -4,8 +4,9 @@
 use ctrl_freeq::analysis::Dynamics;
 use ctrl_freeq::optim::IterationReport;
 use eframe::egui::{self, Color32, ColorImage, RichText, TextureHandle, TextureOptions, Ui};
-use egui_plot::{FilledArea, Legend, Line, Plot, PlotImage, PlotPoint, PlotPoints};
+use egui_plot::{FilledArea, HoverPosition, Legend, Line, Plot, PlotImage, PlotPoint, PlotPoints};
 
+use crate::numbers;
 use crate::run::Results;
 
 /// Which tab is showing, and the choices made in it.
@@ -116,7 +117,7 @@ fn convergence(ui: &mut Ui, view: &mut View, history: &[IterationReport]) {
     } else {
         "fidelity"
     };
-    Plot::new("convergence")
+    plot("convergence")
         .height(ui.available_height().max(300.0) - 10.0)
         .x_axis_label("iteration")
         .y_axis_label(label)
@@ -131,41 +132,74 @@ fn convergence(ui: &mut Ui, view: &mut View, history: &[IterationReport]) {
         });
 }
 
+/// A plot in the scrolling results panel.  The wheel scrolls the panel rather than panning the plot, which would
+/// stop it fitting its data; dragging still pans, and a double click fits it again.
+fn plot<'a>(id: impl egui::AsId) -> Plot<'a> {
+    Plot::new(id).allow_scroll(false)
+}
+
+/// A plot whose x axis is in SI `unit`s: ticks and the hover read-out written as [`numbers`] writes them, so that
+/// a nanosecond and a millisecond pulse, or a kilohertz and a gigahertz offset, read alike.
+fn si_plot<'a>(id: impl egui::AsId, unit: &'static str) -> Plot<'a> {
+    plot(id)
+        .x_axis_formatter(|mark, _| numbers::tick(mark.value, mark.step_size))
+        .label_formatter(move |hover| {
+            let (name, at) = match hover {
+                HoverPosition::NearDataPoint {
+                    plot_name, position, ..
+                } => (*plot_name, *position),
+                HoverPosition::Elsewhere { position } => ("", *position),
+            };
+            let point = format!("{} {unit}\n{}", numbers::rounded(at.x), numbers::rounded(at.y));
+            Some(if name.is_empty() {
+                point
+            } else {
+                format!("{name}\n{point}")
+            })
+        })
+}
+
+/// Times in nanoseconds, as the analysis keeps them, in seconds.
+fn in_seconds(ns: &[f64]) -> Vec<f64> {
+    ns.iter().map(|t| t * 1e-9).collect()
+}
+
 fn series(xs: &[f64], ys: &[f64]) -> PlotPoints<'static> {
     xs.iter().zip(ys).map(|(&x, &y)| [x, y]).collect()
 }
 
 fn pulses(ui: &mut Ui, r: &Results) {
     let a = &r.analysis;
+    let t = &in_seconds(&a.times_ns);
     ui.label(RichText::new("Amplitudes are fractions of each qubit's maximum Rabi frequency.").weak());
     for p in &a.pulses {
         ui.add_space(6.0);
         ui.label(RichText::new(format!("Qubit {}", p.qubit + 1)).strong());
         ui.columns(3, |cols| {
-            Plot::new(("iq", p.qubit))
+            si_plot(("iq", p.qubit), "s")
                 .height(PLOT_HEIGHT)
                 .legend(Legend::default())
-                .x_axis_label("t (ns)")
+                .x_axis_label("t (s)")
                 .link_axis("pulses", [true, false])
                 .show(&mut cols[0], |plot| {
-                    plot.line(Line::new("I (cx)", series(&a.times_ns, &p.cx)).color(X_COLOUR));
-                    plot.line(Line::new("Q (cy)", series(&a.times_ns, &p.cy)).color(Y_COLOUR));
+                    plot.line(Line::new("I (cx)", series(t, &p.cx)).color(X_COLOUR));
+                    plot.line(Line::new("Q (cy)", series(t, &p.cy)).color(Y_COLOUR));
                 });
-            Plot::new(("amp", p.qubit))
+            si_plot(("amp", p.qubit), "s")
                 .height(PLOT_HEIGHT)
                 .legend(Legend::default())
-                .x_axis_label("t (ns)")
+                .x_axis_label("t (s)")
                 .link_axis("pulses", [true, false])
                 .show(&mut cols[1], |plot| {
-                    plot.line(Line::new("amplitude", series(&a.times_ns, &p.amp)).color(Z_COLOUR));
+                    plot.line(Line::new("amplitude", series(t, &p.amp)).color(Z_COLOUR));
                 });
-            Plot::new(("phase", p.qubit))
+            si_plot(("phase", p.qubit), "s")
                 .height(PLOT_HEIGHT)
                 .legend(Legend::default())
-                .x_axis_label("t (ns)")
+                .x_axis_label("t (s)")
                 .link_axis("pulses", [true, false])
                 .show(&mut cols[2], |plot| {
-                    plot.line(Line::new("phase (rad)", series(&a.times_ns, &p.phase)));
+                    plot.line(Line::new("phase (rad)", series(t, &p.phase)));
                 });
         });
     }
@@ -197,13 +231,13 @@ fn dynamics(ui: &mut Ui, view: &mut View, r: &Results) {
     let Some(d) = a.dynamics.get(view.initial_state) else {
         return;
     };
-    let t = &a.state_times_ns;
+    let t = &in_seconds(&a.state_times_ns);
     ui.label(RichText::new("Observables under the mean drift; the band spans the batch snapshots.").weak());
     for (q, obs) in d.observables.iter().enumerate() {
-        Plot::new(("obs", q))
+        si_plot(("obs", q), "s")
             .height(PLOT_HEIGHT)
             .legend(Legend::default())
-            .x_axis_label("t (ns)")
+            .x_axis_label("t (s)")
             .y_axis_label(format!("qubit {}", q + 1))
             .include_y(-1.05)
             .include_y(1.05)
@@ -221,10 +255,10 @@ fn dynamics(ui: &mut Ui, view: &mut View, r: &Results) {
     if leaks(d) {
         ui.add_space(8.0);
         ui.label(RichText::new("Population outside the computational subspace.").weak());
-        Plot::new("leakage")
+        si_plot("leakage", "s")
             .height(PLOT_HEIGHT)
             .legend(Legend::default())
-            .x_axis_label("t (ns)")
+            .x_axis_label("t (s)")
             .y_axis_label("leakage")
             .include_y(0.0)
             .link_axis("dynamics", [true, false])
@@ -246,10 +280,10 @@ fn dynamics(ui: &mut Ui, view: &mut View, r: &Results) {
     for chunk in chunks {
         ui.columns(columns, |cols| {
             for (col, &c) in cols.iter_mut().zip(&chunk) {
-                Plot::new(("component", c))
+                si_plot(("component", c), "s")
                     .height(PLOT_HEIGHT * 0.8)
                     .legend(Legend::default())
-                    .x_axis_label("t (ns)")
+                    .x_axis_label("t (s)")
                     .y_axis_label(d.labels[c].as_str())
                     .link_axis("dynamics", [true, false])
                     .show(col, |plot| {
@@ -284,16 +318,16 @@ fn profile(ui: &mut Ui, view: &mut View, r: &Results) {
     };
     ui.label(RichText::new("Final <X>, <Y>, <Z> as the offsets sweep 1.5 sweep widths, all qubits together.").weak());
     for (q, xyz) in p.xyz.iter().enumerate() {
-        let mhz: Vec<f64> = p.offsets_hz[q].iter().map(|v| v / 1e6).collect();
-        Plot::new(("profile", q))
+        let hz = &p.offsets_hz[q];
+        si_plot(("profile", q), "Hz")
             .height(PLOT_HEIGHT)
             .legend(Legend::default())
-            .x_axis_label(format!("qubit {} offset (MHz)", q + 1))
+            .x_axis_label(format!("qubit {} offset (Hz)", q + 1))
             .include_y(-1.05)
             .include_y(1.05)
             .show(ui, |plot| {
                 for (k, (name, colour)) in XYZ.iter().enumerate() {
-                    plot.line(Line::new(*name, series(&mhz, &xyz[k])).color(*colour).width(2.0));
+                    plot.line(Line::new(*name, series(hz, &xyz[k])).color(*colour).width(2.0));
                 }
             });
     }
@@ -339,17 +373,17 @@ fn rabi_map(ui: &mut Ui, view: &mut View, r: &Results) {
         return;
     };
     for (q, texture) in textures.iter().enumerate() {
-        let mhz: Vec<f64> = m.offsets_hz[q].iter().map(|v| v / 1e6).collect();
-        let (Some(&x0), Some(&x1)) = (mhz.first(), mhz.last()) else {
+        let hz = &m.offsets_hz[q];
+        let (Some(&x0), Some(&x1)) = (hz.first(), hz.last()) else {
             continue;
         };
         // The offsets span one and a half sweep widths.
         let (centre, half_sweep) = ((x0 + x1) / 2.0, (x1 - x0) / 3.0);
         let edges = [centre - half_sweep, centre + half_sweep];
-        Plot::new(("rabi-map", q))
+        si_plot(("rabi-map", q), "Hz")
             .height(PLOT_HEIGHT * 1.5)
             .legend(Legend::default())
-            .x_axis_label(format!("qubit {} offset (MHz)", q + 1))
+            .x_axis_label(format!("qubit {} offset (Hz)", q + 1))
             .y_axis_label("Ω / Ω max")
             .show(ui, |plot| {
                 plot.image(PlotImage::new(
@@ -432,5 +466,51 @@ mod tests {
         assert_eq!(image.size, [3, 2]);
         assert_eq!(image.pixels[..3], [diverging(1.0), diverging(1.0), diverging(0.0)]);
         assert!(image.pixels[3..].iter().all(|&p| p == diverging(-1.0)));
+    }
+
+    /// The y range a plot from `make` shows of a line from −10 to 17 after the wheel turns over it, in an 800 × 600
+    /// window.
+    fn after_the_wheel<'a>(make: impl Fn() -> Plot<'a>) -> [f64; 2] {
+        let ctx = egui::Context::default();
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -200.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut shown = [0.0; 2];
+        for frame in 0..12 {
+            let events = match frame {
+                0 => vec![egui::Event::PointerMoved(egui::pos2(400.0, 100.0))],
+                1..=10 => vec![wheel.clone()],
+                _ => vec![],
+            };
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                time: Some(0.1 * frame as f64),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let response = make()
+                    .height(PLOT_HEIGHT)
+                    .show(ui, |p| p.line(Line::new("", series(&[0.0, 1.0], &[-10.0, 17.0]))));
+                let bounds = response.transform.bounds();
+                shown = [bounds.min()[1], bounds.max()[1]];
+            });
+            // Nothing paints here, so nothing takes the font atlas.
+            output.textures_delta.clear();
+        }
+        shown
+    }
+
+    /// The wheel over a plot scrolls the panel, as it does everywhere else in it; panning the plot instead would
+    /// leave it showing a window that no longer fits its data.
+    #[test]
+    fn the_wheel_leaves_plots_alone() {
+        let [lo, hi] = after_the_wheel(|| plot("plain"));
+        assert!(lo <= -10.0 && hi >= 17.0, "a plain plot shows {lo} to {hi}");
+        let [lo, hi] = after_the_wheel(|| si_plot("si", "s"));
+        assert!(lo <= -10.0 && hi >= 17.0, "an SI plot shows {lo} to {hi}");
     }
 }
