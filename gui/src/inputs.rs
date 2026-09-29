@@ -45,6 +45,13 @@ pub fn show(ui: &mut Ui, cfg: &mut Config, platform: Platform) {
     optimisation(ui, cfg, platform);
 }
 
+/// A drag-or-type number field.  What is typed is stored on Enter or when the field is left, not at every key: on
+/// the way to 200 the field would otherwise hold 2 and then 20, and each would be checked and acted on.  Escape
+/// abandons the edit.
+fn number<'a>(value: &'a mut impl egui::emath::Numeric) -> DragValue<'a> {
+    DragValue::new(value).update_while_editing(false)
+}
+
 /// A drag-or-type field for a quantity in SI `unit`s, shown and read as [`numbers::format`] writes it, so `4e7` and
 /// `2e-7` can be typed.
 ///
@@ -53,7 +60,7 @@ pub fn show(ui: &mut Ui, cfg: &mut Config, platform: Platform) {
 fn si(ui: &mut Ui, value: &mut f64, unit: &str, at_zero: f64) -> egui::Response {
     let speed = if *value == 0.0 { at_zero } else { value.abs() * 0.005 };
     ui.add(
-        DragValue::new(value)
+        number(value)
             .speed(speed)
             .suffix(format!(" {unit}"))
             .custom_formatter(|v, _| numbers::format(v)),
@@ -186,7 +193,7 @@ fn pulse(ui: &mut Ui, cfg: &mut Config) {
                 let a = seconds(ui, &mut duration).changed();
                 ui.end_row();
                 ui.label("Time steps");
-                let b = ui.add(DragValue::new(&mut points).range(2..=2000)).changed();
+                let b = ui.add(number(&mut points).range(2..=2000)).changed();
                 ui.end_row();
                 if a || b {
                     edit::set_pulse(cfg, duration.max(1e-12), points);
@@ -233,13 +240,13 @@ fn qubits(ui: &mut Ui, cfg: &mut Config) {
                         combo(ui, ("mode", q), &mut p.wf_mode[q], &options);
                     });
                     row(ui, "Coefficients", n, |ui, q| {
-                        drop(ui.add(DragValue::new(&mut p.n_para[q]).range(1..=64)))
+                        drop(ui.add(number(&mut p.n_para[q]).range(1..=64)))
                     });
                     row(ui, "Envelope", n, |ui, q| {
                         string_combo(ui, ("env", q), &mut p.amplitude_envelope[q], envelope_names())
                     });
                     row(ui, "Envelope order", n, |ui, q| {
-                        drop(ui.add(DragValue::new(&mut p.amplitude_order[q]).range(1..=8)))
+                        drop(ui.add(number(&mut p.amplitude_order[q]).range(1..=8)))
                     });
                     row(ui, "Coverage", n, |ui, q| {
                         let options: Vec<(Coverage, &str)> = Coverage::ALL.iter().map(|c| (*c, c.name())).collect();
@@ -250,12 +257,12 @@ fn qubits(ui: &mut Ui, cfg: &mut Config) {
                     if selective {
                         row(ui, "Band width", n, |ui, q| drop(hz(ui, &mut p.pulse_bandwidth[q])));
                         row(ui, "Fraction outside band", n, |ui, q| {
-                            drop(ui.add(DragValue::new(&mut p.ratio_factor[q]).range(0.0..=1.0).speed(0.01)))
+                            drop(ui.add(number(&mut p.ratio_factor[q]).range(0.0..=1.0).speed(0.01)))
                         });
                     }
                     if band {
                         row(ui, "Profile order", n, |ui, q| {
-                            drop(ui.add(DragValue::new(&mut p.profile_order[q]).range(1..=8)))
+                            drop(ui.add(number(&mut p.profile_order[q]).range(1..=8)))
                         });
                     }
                     if dissipative {
@@ -279,7 +286,7 @@ fn qubits(ui: &mut Ui, cfg: &mut Config) {
                             row(ui, "Stark coefficient", n, |ui, q| {
                                 drop(
                                     ui.add(
-                                        DragValue::new(&mut s[q])
+                                        number(&mut s[q])
                                             .speed(1e-11)
                                             .custom_formatter(|v, _| numbers::format(v)),
                                     ),
@@ -403,7 +410,7 @@ fn targets(ui: &mut Ui, cfg: &mut Config) {
                         Targets::PhiBeta { phi, beta } => {
                             for (q, (axis, angle)) in phi[i].iter_mut().zip(beta[i].iter_mut()).enumerate() {
                                 string_combo(ui, ("phi", i, q), axis, &ROTATION_AXES);
-                                ui.add(DragValue::new(angle).speed(1.0).suffix("°"));
+                                ui.add(number(angle).speed(1.0).suffix("°"));
                             }
                         }
                     });
@@ -436,22 +443,17 @@ fn optimisation(ui: &mut Ui, cfg: &mut Config, platform: Platform) {
                 string_combo(ui, "algorithm", &mut o.algorithm, optimizer_names());
                 ui.end_row();
                 ui.label("Iteration limit");
-                ui.add(DragValue::new(&mut o.max_iter).range(1..=100_000))
+                ui.add(number(&mut o.max_iter).range(1..=100_000))
                     .on_hover_text("Function evaluations for the derivative-free optimisers");
                 ui.end_row();
                 ui.label("Target fidelity");
-                ui.add(
-                    DragValue::new(&mut o.targ_fid)
-                        .range(0.0..=1.0)
-                        .speed(0.0005)
-                        .max_decimals(6),
-                );
+                ui.add(number(&mut o.targ_fid).range(0.0..=1.0).speed(0.0005).max_decimals(6));
                 ui.end_row();
                 ui.label("Offset snapshots");
-                ui.add(DragValue::new(&mut o.h0_snapshots).range(1..=2000));
+                ui.add(number(&mut o.h0_snapshots).range(1..=2000));
                 ui.end_row();
                 ui.label("Rabi snapshots");
-                ui.add(DragValue::new(&mut o.omega_r_snapshots).range(1..=200));
+                ui.add(number(&mut o.omega_r_snapshots).range(1..=200));
                 ui.end_row();
 
                 ui.label("Seed");
@@ -461,7 +463,7 @@ fn optimisation(ui: &mut Ui, cfg: &mut Config, platform: Platform) {
                         cfg.seed = fixed.then_some(1);
                     }
                     if let Some(seed) = &mut cfg.seed {
-                        ui.add(DragValue::new(seed));
+                        ui.add(number(seed));
                     } else {
                         ui.label(RichText::new("new each run").weak());
                     }
@@ -484,4 +486,96 @@ fn optimisation(ui: &mut Ui, cfg: &mut Config, platform: Platform) {
                 }
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Frames of an 800 × 600 window holding one number field for `value`.
+    struct Window {
+        ctx: egui::Context,
+        frame: u32,
+    }
+
+    impl Window {
+        fn new() -> Self {
+            Window {
+                ctx: egui::Context::default(),
+                frame: 0,
+            }
+        }
+
+        /// One frame with `events`; returns where the field is.
+        fn frame(&mut self, value: &mut usize, events: Vec<egui::Event>) -> egui::Rect {
+            self.frame += 1;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                time: Some(0.1 * f64::from(self.frame)),
+                events,
+                ..Default::default()
+            };
+            let mut rect = egui::Rect::NOTHING;
+            let mut output = self.ctx.run_ui(input, |ui| rect = ui.add(number(value)).rect);
+            // Nothing paints here, so nothing takes the font atlas.
+            output.textures_delta.clear();
+            rect
+        }
+    }
+
+    fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    /// Typing 200 goes through 2 and 20 on the way; neither is stored, so neither is checked or acted on.
+    #[test]
+    fn a_typed_number_is_stored_when_it_is_finished() {
+        let mut value = 100;
+        let mut w = Window::new();
+        let at = w.frame(&mut value, vec![]).center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        w.frame(&mut value, vec![egui::Event::PointerMoved(at), button(true)]);
+        w.frame(&mut value, vec![button(false)]);
+        w.frame(&mut value, vec![key(egui::Key::A, egui::Modifiers::COMMAND)]);
+        w.frame(&mut value, vec![egui::Event::Text("2".into())]);
+        assert_eq!(value, 100, "half-typed");
+        w.frame(&mut value, vec![egui::Event::Text("00".into())]);
+        assert_eq!(value, 100, "typed, not yet entered");
+        w.frame(&mut value, vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        w.frame(&mut value, vec![]);
+        assert_eq!(value, 200);
+    }
+
+    /// Clicking elsewhere - another field, or Run - finishes the number as Enter does.
+    #[test]
+    fn leaving_a_field_stores_what_was_typed() {
+        let mut value = 100;
+        let mut w = Window::new();
+        let at = w.frame(&mut value, vec![]).center();
+        let click = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        w.frame(&mut value, vec![egui::Event::PointerMoved(at), click(at, true)]);
+        w.frame(&mut value, vec![click(at, false)]);
+        w.frame(&mut value, vec![key(egui::Key::A, egui::Modifiers::COMMAND)]);
+        w.frame(&mut value, vec![egui::Event::Text("200".into())]);
+        let away = egui::pos2(600.0, 400.0);
+        w.frame(&mut value, vec![egui::Event::PointerMoved(away), click(away, true)]);
+        w.frame(&mut value, vec![click(away, false)]);
+        assert_eq!(value, 200);
+    }
 }

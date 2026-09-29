@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly.  Deterministic optimisers ignore it.  This is a breaking change for anything constructing
   `RunControl` directly.
 
+### Fixed
+
+- A number typed into the interface is taken on Enter or when the field is left, not at every key.  Typing 200
+  time steps no longer sets 2 on the way, which drew a "fix before running" warning mid-number.  Escape abandons
+  the edit; dragging still changes the value as it moves.
+
 ## [0.2.0] - 2026-09-21
 
 Corrections to the physics, and the reporting that goes with them.  What still differs from the Python package is
