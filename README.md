@@ -25,8 +25,9 @@ using exact gradients and Hessians.
   `nelder-mead`, `spsa`, `cma-es`.  All report progress, can be cancelled and stop at a target fidelity; the
   stochastic ones take the run's seed, so their runs repeat exactly.
 - **Parallel:** batches and Hessians run on all cores, with bit-for-bit identical results on any thread count.
-- **Reporting:** pulses, state dynamics and excitation profiles for the plots, the population leaking out of the
-  computational subspace over time, and each qubit's peak amplitude against its maximum Rabi frequency.
+- **Reporting:** pulses, state dynamics and excitation profiles for the plots, with a map over offset and Rabi
+  frequency when the Rabi frequency is uncertain, the population leaking out of the computational subspace over
+  time, and each qubit's peak amplitude against its maximum Rabi frequency.
 
 Differences from the Python package are listed in [DEVIATIONS.md](DEVIATIONS.md).
 
@@ -59,8 +60,8 @@ setup use `ctrl_freeq::hamiltonian::default_config("superconducting", 2)`.
 ## The interface
 
 A desktop and browser application edits a configuration, runs it with live convergence, and plots the pulses,
-the state dynamics and the excitation profile.  Configurations load and save in the Python package's JSON format;
-results export as JSON and the waveforms as CSV.
+the state dynamics, the excitation profile and, with a Rabi spread, the Rabi map.  Configurations load and save in
+the Python package's JSON format; results export as JSON and the waveforms as CSV.
 
 ```bash
 cargo run -p ctrl-freeq-gui --release          # desktop

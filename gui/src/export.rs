@@ -103,6 +103,7 @@ mod tests {
             pulses: vec![trace(0), trace(1)],
             dynamics: vec![],
             profiles: vec![],
+            rabi_maps: vec![],
         }
     }
 

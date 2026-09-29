@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   perturbation stochastic approximation with step-size calibration and blocking; and `cma-es`, the covariance
   matrix adaptation evolution strategy.  All five derivative-free optimisers now share one box on the
   parameters and one per-evaluation progress report.
+- `Analysis::rabi_maps` and a Rabi map tab in the interface, for runs with a Rabi spread and more than one Rabi
+  snapshot: the final `<X>`, `<Y>` or `<Z>` per qubit over offset and Rabi frequency, on a blue-white-red scale,
+  boxed by the sweep width and the Rabi frequencies drawn for the optimisation.  Qubits with a spread are scaled
+  together; those without keep their maximum Rabi frequency.
 
 ### Changed
 

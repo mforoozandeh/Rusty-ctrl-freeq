@@ -1,4 +1,5 @@
-//! What the plots need after a run: the pulses, the state dynamics, and the excitation profile.
+//! What the plots need after a run: the pulses, the state dynamics, the excitation profile, and - with a Rabi
+//! spread - the map of the profile over Rabi frequency too.
 //!
 //! Everything here is plain `f64` propagation of the optimised pulse, with the same Hamiltonians, time step and
 //! evolution as the objective.
@@ -23,6 +24,11 @@ const MAX_FULL_DENSITY: usize = 4;
 const PROFILE_POINTS: usize = 1000;
 #[cfg(target_arch = "wasm32")]
 const PROFILE_POINTS: usize = 400;
+/// Offsets, and Rabi frequencies, in the Rabi map.
+#[cfg(not(target_arch = "wasm32"))]
+const MAP_POINTS: usize = 101;
+#[cfg(target_arch = "wasm32")]
+const MAP_POINTS: usize = 51;
 
 /// Plot data for a finished run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -37,6 +43,8 @@ pub struct Analysis {
     pub dynamics: Vec<Dynamics>,
     /// One per initial state.
     pub profiles: Vec<ExcitationProfile>,
+    /// One per initial state when the run drew more than one set of Rabi frequencies; otherwise none.
+    pub rabi_maps: Vec<RabiMap>,
 }
 
 /// A qubit's modulated waveform, as a fraction of its maximum Rabi frequency.
@@ -93,6 +101,25 @@ pub struct ExcitationProfile {
     pub xyz: Vec<[Vec<f64>; 3]>,
 }
 
+/// The excitation profile swept through the Rabi frequencies as well as the offsets.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RabiMap {
+    /// Which initial state.
+    pub initial_state: usize,
+    /// Per qubit, the offsets swept, in Hz, across 1.5 sweep widths about the configured offset.
+    pub offsets_hz: Vec<Vec<f64>>,
+    /// The Rabi frequencies swept, as fractions of the maximum.  Every qubit with a Rabi spread is scaled
+    /// together; qubits without one keep their maximum, as they did throughout the optimisation.  From half to one
+    /// and a half, or four times the widest relative spread either side of one if that reaches further, never
+    /// below zero.
+    pub scales: Vec<f64>,
+    /// Per qubit, `⟨σx⟩, ⟨σy⟩, ⟨σz⟩` at the end of the pulse, row by row: at `scales[r]` and offset `c`, entry
+    /// `r · offsets + c`.
+    pub xyz: Vec<[Vec<f64>; 3]>,
+    /// Per qubit, the smallest and largest Rabi frequency drawn for the optimisation, as fractions of the maximum.
+    pub drawn: Vec<[f64; 2]>,
+}
+
 /// Plot data for `result`, a run of `cfg`.
 pub fn analyse(cfg: &Config, result: &RunResult) -> Result<Analysis> {
     let problem = Problem::build_with_seed(cfg, result.seed)?;
@@ -117,6 +144,11 @@ pub fn analyse(cfg: &Config, result: &RunResult) -> Result<Analysis> {
     let profiles = (0..p.initial_states.len())
         .map(|i| profile(p, &w, i))
         .collect::<Result<Vec<_>>>()?;
+    let rabi_maps = if p.n_rabi > 1 {
+        rabi_maps(cfg, p, &w)?
+    } else {
+        Vec::new()
+    };
 
     Ok(Analysis {
         times_ns: p.times.iter().map(|t| t * 1e9).collect(),
@@ -124,6 +156,7 @@ pub fn analyse(cfg: &Config, result: &RunResult) -> Result<Analysis> {
         pulses,
         dynamics,
         profiles,
+        rabi_maps,
     })
 }
 
@@ -147,31 +180,40 @@ fn controls(p: &Problem, w: &Waveforms, rabi: &[f64]) -> Vec<Vec<f64>> {
         .collect()
 }
 
+/// `state` after one step under drift `h0` and controls `ut`.
+fn step(p: &Problem, h0: &CMat<f64>, ut: &[f64], state: &CMat<f64>) -> Result<CMat<f64>> {
+    let mut h = h0.clone();
+    for (k, op) in p.control_ops.iter().enumerate() {
+        h.axpy_re(ut[k], op);
+    }
+    let u = expm_mi_dt(&h, p.dt)?;
+    Ok(match &p.evolution {
+        Evolution::Hilbert => u.matmul(state)?,
+        Evolution::Liouville => u.matmul(state)?.matmul(&u.adjoint())?,
+        // Strang splitting, as the objective propagates: half a dissipation step at each end of the step, which is
+        // the same sequence once the halves between steps meet.
+        Evolution::Lindblad(ops) => {
+            let entering = ops.apply(state, Step::Half, false)?;
+            let turned = u.matmul(&entering)?.matmul(&u.adjoint())?;
+            ops.apply(&turned, Step::Half, false)?
+        }
+    })
+}
+
 /// `initial` and the state after every step under drift `h0` and controls `u`.
 fn trajectory(p: &Problem, h0: &CMat<f64>, u: &[Vec<f64>], initial: &CMat<f64>) -> Result<Vec<CMat<f64>>> {
-    let mut state = initial.clone();
     let mut out = Vec::with_capacity(p.n_pulse + 1);
-    out.push(state.clone());
+    out.push(initial.clone());
     for ut in u {
-        let mut h = h0.clone();
-        for (k, op) in p.control_ops.iter().enumerate() {
-            h.axpy_re(ut[k], op);
-        }
-        let step = expm_mi_dt(&h, p.dt)?;
-        state = match &p.evolution {
-            Evolution::Hilbert => step.matmul(&state)?,
-            Evolution::Liouville => step.matmul(&state)?.matmul(&step.adjoint())?,
-            // Strang splitting, as the objective propagates: half a dissipation step at each end of the step,
-            // which is the same sequence once the halves between steps meet.
-            Evolution::Lindblad(ops) => {
-                let entering = ops.apply(&state, Step::Half, false)?;
-                let turned = step.matmul(&entering)?.matmul(&step.adjoint())?;
-                ops.apply(&turned, Step::Half, false)?
-            }
-        };
-        out.push(state.clone());
+        let next = step(p, h0, ut, out.last().expect("starts with the initial state"))?;
+        out.push(next);
     }
     Ok(out)
+}
+
+/// The state at the end of the pulse under drift `h0` and controls `u`.
+fn final_state(p: &Problem, h0: &CMat<f64>, u: &[Vec<f64>], initial: &CMat<f64>) -> Result<CMat<f64>> {
+    u.iter().try_fold(initial.clone(), |state, ut| step(p, h0, ut, &state))
 }
 
 /// `Re⟨ψ|O|ψ⟩` or `Re Tr(O·ρ)`.
@@ -220,6 +262,14 @@ fn pick(traj: &[CMat<f64>], idx: &[(usize, usize)]) -> Vec<Vec<[f64; 2]>> {
 /// Population outside the computational subspace at each step: `1 − Tr(P·ρ)`, or `1 − ‖P·ψ‖²`.
 fn leakage_over(projector: &CMat<f64>, traj: &[CMat<f64>]) -> Vec<f64> {
     traj.iter().map(|s| 1.0 - expectation(projector, s)).collect()
+}
+
+/// Per qubit, `⟨σx⟩, ⟨σy⟩, ⟨σz⟩` in `state`.
+fn bloch(p: &Problem, state: &CMat<f64>) -> Vec<[f64; 3]> {
+    p.observables
+        .iter()
+        .map(|ops| [0, 1, 2].map(|k| expectation(&ops[k], state)))
+        .collect()
 }
 
 fn observables_over(p: &Problem, traj: &[CMat<f64>]) -> Vec<[Vec<f64>; 3]> {
@@ -298,35 +348,114 @@ fn dynamics(p: &Problem, w: &Waveforms, mean_drift: &CMat<f64>, i: usize) -> Res
     })
 }
 
-fn profile(p: &Problem, w: &Waveforms, i: usize) -> Result<ExcitationProfile> {
-    let two_pi = 2.0 * std::f64::consts::PI;
-    let n = PROFILE_POINTS;
-    let offsets: Vec<Vec<f64>> = (0..p.n_qubits)
+/// Per qubit, `n` offsets in rad/s across 1.5 sweep widths about the configured offset.
+fn offset_sweep(p: &Problem, n: usize) -> Vec<Vec<f64>> {
+    (0..p.n_qubits)
         .map(|q| crate::basis::linspace(p.delta[q] - 0.75 * p.sw[q], p.delta[q] + 0.75 * p.sw[q], n))
-        .collect();
+        .collect()
+}
+
+/// Offsets in rad/s as Hz.
+fn in_hz(offsets: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    let two_pi = 2.0 * std::f64::consts::PI;
+    offsets.iter().map(|o| o.iter().map(|v| v / two_pi).collect()).collect()
+}
+
+/// The drift with every qubit at its `j`-th swept offset.
+fn drift_at(p: &Problem, offsets: &[Vec<f64>], j: usize) -> Result<CMat<f64>> {
+    let at: Vec<f64> = offsets.iter().map(|o| o[j]).collect();
+    p.model.drift(&at, p.coupling.as_ref())
+}
+
+/// `[qubit][axis][point]` from `[point][qubit][axis]`.
+fn per_qubit(p: &Problem, finals: &[Vec<[f64; 3]>]) -> Vec<[Vec<f64>; 3]> {
+    (0..p.n_qubits)
+        .map(|q| [0, 1, 2].map(|k| finals.iter().map(|f| f[q][k]).collect()))
+        .collect()
+}
+
+fn profile(p: &Problem, w: &Waveforms, i: usize) -> Result<ExcitationProfile> {
+    let offsets = offset_sweep(p, PROFILE_POINTS);
     let u = controls(p, w, &p.rabi_max);
     let initial = &p.initial_states[i];
-    let finals = crate::parallel::map(n, |j| -> Result<Vec<[f64; 3]>> {
-        let at: Vec<f64> = offsets.iter().map(|o| o[j]).collect();
-        let h0 = p.model.drift(&at, p.coupling.as_ref())?;
-        let last = trajectory(p, &h0, &u, initial)?
-            .pop()
-            .unwrap_or_else(|| initial.clone());
-        Ok(p.observables
-            .iter()
-            .map(|ops| [0, 1, 2].map(|k| expectation(&ops[k], &last)))
-            .collect())
+    let finals = crate::parallel::map(PROFILE_POINTS, |j| -> Result<Vec<[f64; 3]>> {
+        Ok(bloch(p, &final_state(p, &drift_at(p, &offsets, j)?, &u, initial)?))
     })
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
-    let xyz = (0..p.n_qubits)
-        .map(|q| [0, 1, 2].map(|k| finals.iter().map(|f| f[q][k]).collect()))
-        .collect();
     Ok(ExcitationProfile {
         initial_state: i,
-        offsets_hz: offsets.iter().map(|o| o.iter().map(|v| v / two_pi).collect()).collect(),
-        xyz,
+        offsets_hz: in_hz(&offsets),
+        xyz: per_qubit(p, &finals),
     })
+}
+
+/// One [`RabiMap`] per initial state.
+fn rabi_maps(cfg: &Config, p: &Problem, w: &Waveforms) -> Result<Vec<RabiMap>> {
+    let par = &cfg.parameters;
+    // Relative spread per qubit; none where there is no maximum to be a fraction of.
+    let spread: Vec<f64> = (0..p.n_qubits)
+        .map(|q| {
+            if par.omega_r_max[q] > 0.0 {
+                par.sigma_omega_r_max[q] / par.omega_r_max[q]
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let reach = spread.iter().fold(0.5f64, |r, &s| r.max(4.0 * s));
+    let scales = crate::basis::linspace((1.0 - reach).max(0.0), 1.0 + reach, MAP_POINTS);
+    let drawn: Vec<[f64; 2]> = (0..p.n_qubits)
+        .map(|q| {
+            if p.rabi_max[q] == 0.0 {
+                return [1.0, 1.0];
+            }
+            let fractions = p.batch.iter().map(|e| e.rabi[q] / p.rabi_max[q]);
+            [
+                fractions.clone().fold(f64::INFINITY, f64::min),
+                fractions.fold(f64::NEG_INFINITY, f64::max),
+            ]
+        })
+        .collect();
+
+    let offsets = offset_sweep(p, MAP_POINTS);
+    let drifts = (0..MAP_POINTS)
+        .map(|j| drift_at(p, &offsets, j))
+        .collect::<Result<Vec<_>>>()?;
+    let rows: Vec<Vec<Vec<f64>>> = scales
+        .iter()
+        .map(|&s| {
+            let rabi: Vec<f64> = (0..p.n_qubits)
+                .map(|q| {
+                    if spread[q] > 0.0 {
+                        s * p.rabi_max[q]
+                    } else {
+                        p.rabi_max[q]
+                    }
+                })
+                .collect();
+            controls(p, w, &rabi)
+        })
+        .collect();
+
+    (0..p.initial_states.len())
+        .map(|i| {
+            let initial = &p.initial_states[i];
+            let finals = crate::parallel::map(MAP_POINTS * MAP_POINTS, |k| -> Result<Vec<[f64; 3]>> {
+                let (r, c) = (k / MAP_POINTS, k % MAP_POINTS);
+                Ok(bloch(p, &final_state(p, &drifts[c], &rows[r], initial)?))
+            })
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+            Ok(RabiMap {
+                initial_state: i,
+                offsets_hz: in_hz(&offsets),
+                scales: scales.clone(),
+                xyz: per_qubit(p, &finals),
+                drawn: drawn.clone(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -495,5 +624,95 @@ mod tests {
         assert!((o[0] - (10e6 - 3.75e6)).abs() < 1e-3 && (o[o.len() - 1] - (10e6 + 3.75e6)).abs() < 1e-3);
         // No pulse: every offset leaves Z at +1.
         assert!(a.profiles[0].xyz[0][2].iter().all(|&z| (z - 1.0).abs() < 1e-12));
+    }
+
+    /// `single()` with a Rabi spread of `sigma` Hz on its 40 MHz qubit and `count` Rabi snapshots.
+    fn spread(sigma: f64, count: usize) -> Config {
+        let mut c = single();
+        c.parameters.sigma_omega_r_max = vec![sigma];
+        c.optimization.omega_r_snapshots = count;
+        c
+    }
+
+    fn maps_for(cfg: &Config) -> Vec<RabiMap> {
+        let p = Problem::build_with_seed(cfg, 3).unwrap();
+        analyse(cfg, &result_for(p.x0.clone())).unwrap().rabi_maps
+    }
+
+    /// The map needs Rabi frequencies to sweep: a spread, drawn more than once.
+    #[test]
+    fn rabi_maps_need_a_spread_and_several_snapshots() {
+        assert!(maps_for(&spread(0.0, 1)).is_empty());
+        assert!(maps_for(&spread(0.0, 5)).is_empty());
+        assert!(maps_for(&spread(4e6, 1)).is_empty());
+        let maps = maps_for(&spread(4e6, 5));
+        assert_eq!(maps.len(), 1, "one per initial state");
+        let m = &maps[0];
+        assert_eq!((m.offsets_hz[0].len(), m.scales.len()), (MAP_POINTS, MAP_POINTS));
+        assert!(m.xyz[0].iter().all(|v| v.len() == MAP_POINTS * MAP_POINTS));
+    }
+
+    /// The middle of the map is the configured offset at the maximum Rabi frequency: where the mean dynamics end.
+    #[test]
+    fn the_rabi_map_centre_matches_the_mean_dynamics() {
+        let cfg = spread(4e6, 5);
+        let p = Problem::build_with_seed(&cfg, 3).unwrap();
+        let a = analyse(&cfg, &result_for(p.x0.clone())).unwrap();
+        let m = &a.rabi_maps[0];
+        let c = MAP_POINTS / 2;
+        assert!((m.offsets_hz[0][c] - 10e6).abs() < 1e-6 && (m.scales[c] - 1.0).abs() < 1e-12);
+        for k in 0..3 {
+            let got = m.xyz[0][k][c * MAP_POINTS + c];
+            let want = *a.dynamics[0].observables[0][k].last().unwrap();
+            assert!((got - want).abs() < 1e-9, "axis {k}: {got} vs {want}");
+        }
+    }
+
+    /// Half to one and a half times the maximum, like the B1 maps, unless the draws reach further.
+    #[test]
+    fn the_rabi_map_spans_the_drawn_rabi_frequencies() {
+        let m = &maps_for(&spread(4e6, 20))[0];
+        assert!((m.scales[0] - 0.5).abs() < 1e-12 && (m.scales[MAP_POINTS - 1] - 1.5).abs() < 1e-12);
+        let p = Problem::build_with_seed(&spread(4e6, 20), 3).unwrap();
+        let drawn: Vec<f64> = p.batch.iter().map(|e| e.rabi[0] / p.rabi_max[0]).collect();
+        let lo = drawn.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = drawn.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert_eq!(m.drawn[0], [lo, hi]);
+        assert!(lo < 1.0 && 1.0 < hi);
+
+        // A 25 % spread reaches four standard deviations out: zero to twice the maximum.
+        let wide = &maps_for(&spread(10e6, 20))[0];
+        assert!(wide.scales[0].abs() < 1e-12 && (wide.scales[MAP_POINTS - 1] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_zero_pulse_leaves_z_alone_across_the_rabi_map() {
+        let cfg = spread(4e6, 5);
+        let n = Problem::build_with_seed(&cfg, 3).unwrap().n_params();
+        let a = analyse(&cfg, &result_for(vec![0.0; n])).unwrap();
+        assert!(a.rabi_maps[0].xyz[0][2].iter().all(|&z| (z - 1.0).abs() < 1e-12));
+    }
+
+    /// A qubit without a spread keeps its Rabi frequency across the map: uncoupled, its own map does not change
+    /// from row to row while its neighbour's does.
+    #[test]
+    fn qubits_without_a_spread_keep_their_rabi_frequency() {
+        let mut cfg = Config::from_json(examples().iter().find(|e| e.0 == "two_qubit_parameters").unwrap().1).unwrap();
+        cfg.parameters.j = None;
+        cfg.parameters.point_in_pulse = vec![20; 2];
+        cfg.parameters.sigma_omega_r_max = vec![4e6, 0.0];
+        cfg.optimization.h0_snapshots = 3;
+        cfg.optimization.omega_r_snapshots = 5;
+        let m = &maps_for(&cfg)[0];
+        assert_eq!(m.drawn[1], [1.0, 1.0]);
+        let change = |q: usize| {
+            let (first, last) = (
+                &m.xyz[q][2][..MAP_POINTS],
+                &m.xyz[q][2][(MAP_POINTS - 1) * MAP_POINTS..],
+            );
+            first.iter().zip(last).fold(0.0f64, |w, (a, b)| w.max((a - b).abs()))
+        };
+        assert!(change(1) < 1e-9, "{}", change(1));
+        assert!(change(0) > 1e-3, "{}", change(0));
     }
 }
