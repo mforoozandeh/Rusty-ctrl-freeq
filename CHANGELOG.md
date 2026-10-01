@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   snapshot: the final `<X>`, `<Y>` or `<Z>` per qubit over offset and Rabi frequency, on a blue-white-red scale,
   boxed by the sweep width and the Rabi frequencies drawn for the optimisation.  Qubits with a spread are scaled
   together; those without keep their maximum Rabi frequency.
+- A "three qubit toffoli" preset in the interface: a Toffoli on a chain of three XY-coupled spins, with 400 ns
+  pulses of 32 parameters per qubit, which reaches 0.999 in under a second.
 
 ### Changed
 
@@ -34,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RunControl` carries the run's `seed`, which `spsa` and `cma-es` draw from so that a seeded run repeats
   exactly.  Deterministic optimisers ignore it.  This is a breaking change for anything constructing
   `RunControl` directly.
+
+### Removed
+
+- The four-qubit example from the interface's presets.  It is still bundled with the library.
 
 ### Fixed
 
