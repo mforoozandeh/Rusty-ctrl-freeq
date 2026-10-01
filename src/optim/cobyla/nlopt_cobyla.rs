@@ -1,7 +1,9 @@
 // Vendored from the `cobyla` crate 1.0.4 by Rémi Lafage (MIT, see LICENSE.md in this directory), itself a
 // c2rust translation of the COBYLA implementation in NLopt.  Changes from upstream:
 //   * `std::time` replaced by `crate::time`, which works on wasm32;
-//   * lint allowances widened for this crate's `-D warnings` policy.
+//   * lint allowances widened for this crate's `-D warnings` policy;
+//   * `use core::f64` dropped, so `f64::INFINITY` and `f64::EPSILON` name the type's constants, not the
+//     deprecated module's.
 // The algorithm itself is untouched.
 #![allow(
     clippy::all,
@@ -28,7 +30,6 @@
 )]
 
 use crate::time::{SystemTime, UNIX_EPOCH};
-use core::f64;
 use std::convert::TryFrom;
 
 use std::slice;
