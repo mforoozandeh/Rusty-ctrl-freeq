@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The interface's coefficient field is bounded by the pulse's points instead of a fixed 64: up to the most
+  coefficients whose basis functions the QR can orthonormalise, one point (row) per function (column), per basis
+  and waveform mode.  A count left over the limit by fewer points is kept and reported, not cut.
+- The interface's envelope order and band-selective profile order fields go up to 32 instead of 8.
 - The interface takes, shows and plots quantities in SI units, Hz and s, as the JSON file stores them, instead of
   MHz, ns and µs.  Numbers from 0.001 to 99999 are written out and others in scientific notation (`2e-7 s`,
   `4e7 Hz`), either form can be typed, and a field drags by half a percent of its value, so nanosecond and

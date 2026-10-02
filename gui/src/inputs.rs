@@ -3,8 +3,8 @@
 //! Values are stored, shown and typed in SI units, as in the JSON file: Hz and s, written as [`numbers::format`]
 //! writes them, so that a nanosecond pulse and a millisecond one are edited alike.
 
-use ctrl_freeq::basis::{basis_names, envelope_names};
-use ctrl_freeq::config::{Config, Coverage, ROTATION_AXES, STATE_AXES, Space, Targets, WaveformMode};
+use ctrl_freeq::basis::{basis, basis_names, envelope_names};
+use ctrl_freeq::config::{Config, Coverage, Parameters, ROTATION_AXES, STATE_AXES, Space, Targets, WaveformMode};
 use ctrl_freeq::hamiltonian::model_names;
 use ctrl_freeq::optim::optimizer_names;
 use ctrl_freeq::setup::gate_names;
@@ -101,6 +101,21 @@ fn string_combo(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, value: 
                 ui.selectable_value(value, o.to_string(), *o);
             }
         });
+}
+
+/// The most coefficients qubit `q` can have: the QR that orthonormalises its basis needs at least as many points in
+/// the pulse (rows) as basis functions (columns).
+fn max_n_para(p: &Parameters, q: usize) -> usize {
+    let Ok(b) = basis(&p.wf_type[q]) else {
+        return usize::MAX;
+    };
+    let (mode, points) = (p.wf_mode[q], p.point_in_pulse[q]);
+    // No basis has fewer than one function per two coefficients, so the search ends before its bound.
+    (1..=2 * points + 4)
+        .filter(|&n| b.check_n_para(n, mode).is_ok())
+        .take_while(|&n| b.columns(n, mode) <= points)
+        .last()
+        .unwrap_or(1)
 }
 
 fn section(ui: &mut Ui, title: &str, open: bool, body: impl FnOnce(&mut Ui)) {
@@ -208,6 +223,7 @@ fn qubits(ui: &mut Ui, cfg: &mut Config) {
     let dissipative = cfg.is_dissipative();
     section(ui, "Qubits", true, |ui| {
         let p = &mut cfg.parameters;
+        let max_coefficients: Vec<usize> = (0..n).map(|q| max_n_para(p, q)).collect();
         let delta = p.delta.get_or_insert_with(|| vec![0.0; n]);
         let selective = p
             .coverage
@@ -240,13 +256,15 @@ fn qubits(ui: &mut Ui, cfg: &mut Config) {
                         combo(ui, ("mode", q), &mut p.wf_mode[q], &options);
                     });
                     row(ui, "Coefficients", n, |ui, q| {
-                        drop(ui.add(number(&mut p.n_para[q]).range(1..=64)))
+                        // A value already past the limit, after fewer points, is left for validation to report.
+                        let field = number(&mut p.n_para[q]).range(1..=max_coefficients[q]);
+                        drop(ui.add(field.clamp_existing_to_range(false)))
                     });
                     row(ui, "Envelope", n, |ui, q| {
                         string_combo(ui, ("env", q), &mut p.amplitude_envelope[q], envelope_names())
                     });
                     row(ui, "Envelope order", n, |ui, q| {
-                        drop(ui.add(number(&mut p.amplitude_order[q]).range(1..=8)))
+                        drop(ui.add(number(&mut p.amplitude_order[q]).range(1..=32)))
                     });
                     row(ui, "Coverage", n, |ui, q| {
                         let options: Vec<(Coverage, &str)> = Coverage::ALL.iter().map(|c| (*c, c.name())).collect();
@@ -262,7 +280,7 @@ fn qubits(ui: &mut Ui, cfg: &mut Config) {
                     }
                     if band {
                         row(ui, "Profile order", n, |ui, q| {
-                            drop(ui.add(number(&mut p.profile_order[q]).range(1..=8)))
+                            drop(ui.add(number(&mut p.profile_order[q]).range(1..=32)))
                         });
                     }
                     if dissipative {
@@ -577,5 +595,26 @@ mod tests {
         w.frame(&mut value, vec![egui::Event::PointerMoved(away), click(away, true)]);
         w.frame(&mut value, vec![click(away, false)]);
         assert_eq!(value, 200);
+    }
+
+    #[test]
+    fn the_coefficient_limit_is_the_most_basis_functions_the_points_hold() {
+        let mut c = ctrl_freeq::hamiltonian::default_config("spin_chain", 1).unwrap();
+        for name in basis_names() {
+            let b = basis(name).unwrap();
+            for mode in WaveformMode::ALL {
+                for points in [2, 3, 10, 101, 1000] {
+                    let p = &mut c.parameters;
+                    (p.wf_type[0], p.wf_mode[0], p.point_in_pulse[0]) = (name.to_string(), mode, points);
+                    let max = max_n_para(p, 0);
+                    let next = (max + 1..).find(|&n| b.check_n_para(n, mode).is_ok()).unwrap();
+                    let at = format!("{name}, {}, {points} points", mode.name());
+                    assert!(b.columns(max, mode) <= points, "{at}: {max} does not fit");
+                    assert!(b.columns(next, mode) > points, "{at}: {next} fits too");
+                    c.parameters.n_para[0] = max;
+                    assert!(c.validate().is_empty(), "{at}: {:?}", c.validate());
+                }
+            }
+        }
     }
 }
