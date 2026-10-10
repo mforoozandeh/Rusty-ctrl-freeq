@@ -4,7 +4,7 @@
 //! [`ProgressSink`], which can also cancel the run.  All of them stop when the target fidelity is reached, return the
 //! best point they evaluated, and never see threads: parallelism lives inside the objective.
 //!
-//! A new algorithm is one type implementing [`Optimizer`] plus one entry in [`optimizer`] and [`optimizer_names`];
+//! A new algorithm is one type implementing [`Optimizer`] plus one entry in [`optimizer_with`] and [`optimizer_names`];
 //! [`Monitor`] gives it progress reports, cancellation, the target check and best-point tracking.
 
 mod cobyla;
@@ -12,7 +12,7 @@ mod derivative_free;
 mod gradient;
 mod newton_cg;
 
-pub use derivative_free::{Bobyqa, CmaEs, Cobyla, NelderMead, Spsa};
+pub use derivative_free::{Bobyqa, CmaEs, Cobyla, DfoLs, NelderMead, Spsa};
 pub use gradient::{LBfgs, NewtonExact};
 pub use newton_cg::NewtonCg;
 
@@ -56,6 +56,19 @@ pub trait Objective: Sync {
         let (_, _, h) = self.hessian(x)?;
         Ok((h * nalgebra::DVector::from_column_slice(v)).as_slice().to_vec())
     }
+    /// The objective at `x` and residuals whose squared norm is the cost plus a constant, for least-squares
+    /// methods.  The default has none.
+    fn residuals(&self, x: &[f64]) -> Result<(Eval, Vec<f64>)> {
+        let _ = x;
+        Err(Error::NotSupported(
+            "this objective has no least-squares form, which the dfo-ls optimiser needs".into(),
+        ))
+    }
+}
+
+/// `‖a‖² − ‖b‖²`, computed as `(a − b)ᵀ(a + b)`: no cancellation when both norms are large and close.
+pub fn residual_difference(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| (x - y) * (x + y)).sum()
 }
 
 /// What an optimiser asks the objective for.
@@ -67,6 +80,18 @@ pub enum Derivatives {
     Gradient,
     /// Values, gradients and Hessians.
     Hessian,
+    /// Values and residual vectors, for least-squares methods.
+    Residuals,
+}
+
+/// Settings for one optimiser, from a configuration's `optimization.optimizer_options`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptimizerOptions {
+    /// dfo-ls: directions in the initial interpolation set.  Absent, or at least the parameter count, is the full
+    /// set of `n + 1` points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ndirs_initial: Option<usize>,
 }
 
 /// One row of progress.
@@ -223,14 +248,22 @@ pub trait Optimizer: Send + Sync {
     fn minimize(&self, obj: &dyn Objective, x0: &[f64], ctl: &mut RunControl) -> Result<OptimResult>;
 }
 
-/// The optimiser with configuration name `name`.
+/// The optimiser with configuration name `name`, with default settings.
 pub fn optimizer(name: &str) -> Result<Box<dyn Optimizer>> {
+    optimizer_with(name, &OptimizerOptions::default())
+}
+
+/// The optimiser with configuration name `name` and the given settings.
+pub fn optimizer_with(name: &str, options: &OptimizerOptions) -> Result<Box<dyn Optimizer>> {
     Ok(match name {
         "l-bfgs" => Box::new(LBfgs),
         "newton-cg" => Box::new(NewtonCg),
         "newton-exact" => Box::new(NewtonExact),
         "cobyla" => Box::new(Cobyla),
         "bobyqa" => Box::new(Bobyqa),
+        "dfo-ls" => Box::new(DfoLs {
+            ndirs_initial: options.ndirs_initial,
+        }),
         "nelder-mead" => Box::new(NelderMead),
         "spsa" => Box::new(Spsa),
         "cma-es" => Box::new(CmaEs),
@@ -251,6 +284,7 @@ pub fn optimizer_names() -> &'static [&'static str] {
         "newton-exact",
         "cobyla",
         "bobyqa",
+        "dfo-ls",
         "nelder-mead",
         "spsa",
         "cma-es",
@@ -270,6 +304,8 @@ pub struct Monitor<'s> {
     pub evaluations: usize,
     /// The best point evaluated and its value.
     pub best: Option<(Vec<f64>, Eval)>,
+    /// The residuals at `best`, when [`evaluate_residuals`](Self::evaluate_residuals) chose it.
+    best_residuals: Option<Vec<f64>>,
     /// Set once a stop condition has fired.
     pub exit: Option<Exit>,
 }
@@ -285,6 +321,7 @@ impl<'s> Monitor<'s> {
             started: Instant::now(),
             evaluations: 0,
             best: None,
+            best_residuals: None,
             exit: None,
         }
     }
@@ -306,6 +343,25 @@ impl<'s> Monitor<'s> {
         let n = self.evaluations;
         self.report(n, e, None);
         Ok(e.cost)
+    }
+
+    /// As [`evaluate`](Self::evaluate), for least-squares methods: the best point is decided by
+    /// [`residual_difference`], not by the cost, so costs that round equal cannot hide progress.  A tie keeps the
+    /// incumbent.  The best point is updated before the report, so before any stop check.
+    pub fn evaluate_residuals(&mut self, obj: &dyn Objective, x: &[f64]) -> Result<Vec<f64>> {
+        let (e, r) = obj.residuals(x)?;
+        self.evaluations += 1;
+        if self
+            .best_residuals
+            .as_ref()
+            .is_none_or(|b| residual_difference(b, &r) > 0.0)
+        {
+            self.best = Some((x.to_vec(), e));
+            self.best_residuals = Some(r.clone());
+        }
+        let n = self.evaluations;
+        self.report(n, e, None);
+        Ok(r)
     }
 
     /// Send a report, then check the stop conditions.  `iteration` is compared with the limit.

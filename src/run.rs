@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::error::Result;
 use crate::objective::CostModel;
-use crate::optim::{Exit, IterationReport, ProgressSink, RunControl, optimizer};
+use crate::optim::{Exit, IterationReport, ProgressSink, RunControl, optimizer_with};
 use crate::setup::{Problem, resolve_seed};
 use crate::time::Instant;
 
@@ -88,7 +88,8 @@ pub fn run(cfg: &Config, sink: &mut dyn ProgressSink) -> Result<RunResult> {
     if let Some(threads) = cfg.cpu_cores {
         model = model.with_threads(threads)?;
     }
-    let opt = optimizer(&cfg.optimization.algorithm)?;
+    let options = cfg.optimization.optimizer_options.clone().unwrap_or_default();
+    let opt = optimizer_with(&cfg.optimization.algorithm, &options)?;
     let mut notices = Vec::new();
     if cfg.compute_resource.as_deref() == Some("gpu") {
         notices.push("GPU is not supported; running on CPU.".to_string());
@@ -135,7 +136,7 @@ pub fn run(cfg: &Config, sink: &mut dyn ProgressSink) -> Result<RunResult> {
 mod tests {
     use super::*;
     use crate::config::examples;
-    use crate::optim::NoProgress;
+    use crate::optim::{NoProgress, OptimizerOptions};
 
     #[test]
     fn a_run_reports_the_peak_amplitude_of_its_pulse() {
@@ -155,5 +156,18 @@ mod tests {
         assert_eq!(amplitude_notice(&[0.5, 1.0]), None);
         let notice = amplitude_notice(&[0.5, 1.07]).expect("a notice");
         assert!(notice.contains("qubit 2") && notice.contains("1.07"), "{notice}");
+    }
+
+    /// The configuration's options reach the optimiser: a reduced initial set changes the third evaluation.
+    #[test]
+    fn a_run_passes_its_optimizer_options_on() {
+        let mut cfg = Config::from_json(examples()[0].1).unwrap();
+        cfg.seed = Some(5);
+        cfg.optimization.algorithm = "dfo-ls".into();
+        cfg.optimization.max_iter = 3;
+        let full = run(&cfg, &mut NoProgress).unwrap();
+        cfg.optimization.optimizer_options = Some(OptimizerOptions { ndirs_initial: Some(1) });
+        let reduced = run(&cfg, &mut NoProgress).unwrap();
+        assert_ne!(full.fidelity_history, reduced.fidelity_history);
     }
 }

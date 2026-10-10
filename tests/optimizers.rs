@@ -6,7 +6,7 @@
 use ctrl_freeq::Result;
 use ctrl_freeq::optim::{
     Eval, Exit, IterationReport, Monitor, NoProgress, Objective, ProgressSink, RecordingSink, RunControl, optimizer,
-    optimizer_names,
+    optimizer_names, residual_difference,
 };
 use nalgebra::DMatrix;
 use std::sync::Mutex;
@@ -42,6 +42,9 @@ impl Objective for Rosenbrock {
         let (a, b) = (x[0], x[1]);
         let h = DMatrix::from_row_slice(2, 2, &[2.0 - 400.0 * b + 1200.0 * a * a, -400.0 * a, -400.0 * a, 200.0]);
         Ok((e, g, h))
+    }
+    fn residuals(&self, x: &[f64]) -> Result<(Eval, Vec<f64>)> {
+        Ok((eval(rosen(x)), vec![10.0 * (x[1] - x[0] * x[0]), 1.0 - x[0]]))
     }
 }
 
@@ -136,6 +139,9 @@ impl Objective for Quadratic {
         let (e, g) = self.gradient(x)?;
         Ok((e, g, DMatrix::identity(2, 2) * 2.0))
     }
+    fn residuals(&self, x: &[f64]) -> Result<(Eval, Vec<f64>)> {
+        Ok((self.value(x)?, x.to_vec()))
+    }
 }
 
 /// A starting point that already meets the target ends the run where it stands.  Nothing may sample around it
@@ -187,7 +193,7 @@ fn every_optimiser_cancels_on_its_first_report() {
 /// An optimiser with nothing to vary says so, rather than failing somewhere inside its own linear algebra.
 #[test]
 fn the_derivative_free_optimisers_refuse_an_empty_start() {
-    for name in ["nelder-mead", "spsa", "cma-es"] {
+    for name in ["nelder-mead", "spsa", "cma-es", "dfo-ls"] {
         let opt = optimizer(name).unwrap();
         let mut ctl = RunControl {
             max_iter: 20,
@@ -285,7 +291,7 @@ fn a_best_point_that_meets_the_target_is_not_called_converged() {
 /// different seed is a different run.
 #[test]
 fn the_seed_decides_a_stochastic_run() {
-    for name in ["spsa", "cma-es"] {
+    for name in ["spsa", "cma-es", "dfo-ls"] {
         let run = |seed| {
             let opt = optimizer(name).unwrap();
             let mut sink = RecordingSink::default();
@@ -307,7 +313,107 @@ fn the_seed_decides_a_stochastic_run() {
 fn unknown_names_list_the_supported_ones() {
     let err = optimizer("qiskit-spsa").err().unwrap().to_string();
     assert!(
-        err.contains("l-bfgs, newton-cg, newton-exact, cobyla, bobyqa, nelder-mead, spsa, cma-es"),
+        err.contains("l-bfgs, newton-cg, newton-exact, cobyla, bobyqa, dfo-ls, nelder-mead, spsa, cma-es"),
         "{err}"
     );
+}
+
+/// Residuals `[1e8, x₀]` with the cost computed naively from them, so every cost for `|x₀| ≤ 1` rounds to `1e16`.
+struct Big;
+
+impl Objective for Big {
+    fn dim(&self) -> usize {
+        1
+    }
+    fn value(&self, x: &[f64]) -> Result<Eval> {
+        Ok(eval(1e8f64 * 1e8 + x[0] * x[0]))
+    }
+    fn gradient(&self, _: &[f64]) -> Result<(Eval, Vec<f64>)> {
+        Err(ctrl_freeq::Error::NotSupported("values only".into()))
+    }
+    fn hessian(&self, _: &[f64]) -> Result<(Eval, Vec<f64>, DMatrix<f64>)> {
+        Err(ctrl_freeq::Error::NotSupported("values only".into()))
+    }
+    fn residuals(&self, x: &[f64]) -> Result<(Eval, Vec<f64>)> {
+        Ok((self.value(x)?, vec![1e8, x[0]]))
+    }
+}
+
+#[test]
+fn residual_difference_does_not_cancel() {
+    let d = residual_difference(&[1e8, 1.0], &[1e8, 0.9]);
+    assert!((d - 0.19).abs() < 1e-12, "{d}");
+    assert_eq!(residual_difference(&[1e8, 1.0], &[1e8, 1.0]), 0.0);
+    let naive = (1e16f64 + 1.0) - (1e16 + 0.81);
+    assert_eq!(naive, 0.0, "the naive difference loses it");
+}
+
+/// Costs that round equal cannot hide progress from a residual monitor, and a tie keeps the incumbent.
+#[test]
+fn residual_monitors_compare_points_by_residuals() {
+    let mut sink = NoProgress;
+    let mut ctl = RunControl {
+        max_iter: 10,
+        target_fidelity: 2.0,
+        seed: 0,
+        sink: &mut sink,
+    };
+    let mut m = Monitor::new(&mut ctl);
+    m.evaluate_residuals(&Big, &[1.0]).unwrap();
+    m.evaluate_residuals(&Big, &[0.9]).unwrap();
+    assert_eq!(m.best.as_ref().unwrap().0, vec![0.9]);
+    m.evaluate_residuals(&Big, &[-0.9]).unwrap();
+    assert_eq!(m.best.as_ref().unwrap().0, vec![0.9], "a tie keeps the incumbent");
+}
+
+/// The best point is updated before the budget or a cancellation ends the run on the same evaluation.
+#[test]
+fn the_residual_best_point_is_kept_before_a_stop() {
+    let mut sink = NoProgress;
+    let mut ctl = RunControl {
+        max_iter: 2,
+        target_fidelity: 2.0,
+        seed: 0,
+        sink: &mut sink,
+    };
+    let mut m = Monitor::new(&mut ctl);
+    m.evaluate_residuals(&Big, &[1.0]).unwrap();
+    m.evaluate_residuals(&Big, &[0.9]).unwrap();
+    assert_eq!(m.exit, Some(Exit::MaxIterations));
+    assert_eq!(m.finish(2, Exit::Converged).unwrap().x, vec![0.9]);
+
+    let mut sink = CancelAfter { n: 2, seen: Vec::new() };
+    let mut ctl = RunControl {
+        max_iter: 10,
+        target_fidelity: 2.0,
+        seed: 0,
+        sink: &mut sink,
+    };
+    let mut m = Monitor::new(&mut ctl);
+    m.evaluate_residuals(&Big, &[1.0]).unwrap();
+    m.evaluate_residuals(&Big, &[0.9]).unwrap();
+    assert_eq!(m.exit, Some(Exit::Cancelled));
+    assert_eq!(m.finish(2, Exit::Converged).unwrap().x, vec![0.9]);
+}
+
+/// An objective that never declared a least-squares form says so.
+#[test]
+fn objectives_have_no_residuals_unless_they_say_so() {
+    struct Plain;
+    impl Objective for Plain {
+        fn dim(&self) -> usize {
+            1
+        }
+        fn value(&self, x: &[f64]) -> Result<Eval> {
+            Ok(eval(x[0] * x[0]))
+        }
+        fn gradient(&self, x: &[f64]) -> Result<(Eval, Vec<f64>)> {
+            Ok((self.value(x)?, vec![2.0 * x[0]]))
+        }
+        fn hessian(&self, x: &[f64]) -> Result<(Eval, Vec<f64>, DMatrix<f64>)> {
+            Ok((self.value(x)?, vec![2.0 * x[0]], DMatrix::identity(1, 1) * 2.0))
+        }
+    }
+    let err = Plain.residuals(&[0.0]).unwrap_err();
+    assert!(matches!(err, ctrl_freeq::Error::NotSupported(_)), "{err}");
 }

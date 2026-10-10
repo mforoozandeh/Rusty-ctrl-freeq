@@ -195,6 +195,14 @@ pub fn set_dissipative(cfg: &mut Config, on: bool) {
     }
 }
 
+/// Choose the optimiser.  `optimizer_options` belong to dfo-ls, so any other choice clears them.
+pub fn set_algorithm(cfg: &mut Config, name: &str) {
+    cfg.optimization.algorithm = name.to_string();
+    if name != "dfo-ls" {
+        cfg.optimization.optimizer_options = None;
+    }
+}
+
 /// Change the target method, with a sensible target for each initial state.
 pub fn set_target_method(cfg: &mut Config, method: TargetMethod) {
     let n = cfg.n_qubits();
@@ -302,6 +310,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn leaving_dfo_ls_clears_its_options() {
+        let mut c = presets()[0].1.clone();
+        set_algorithm(&mut c, "dfo-ls");
+        c.optimization.optimizer_options = Some(ctrl_freeq::optim::OptimizerOptions { ndirs_initial: Some(3) });
+        set_algorithm(&mut c, "dfo-ls");
+        assert!(
+            c.optimization.optimizer_options.is_some(),
+            "choosing dfo-ls again keeps them"
+        );
+        assert!(c.validate().is_empty(), "{:?}", c.validate());
+        set_algorithm(&mut c, "l-bfgs");
+        assert_eq!(c.optimization.optimizer_options, None);
+        assert!(c.validate().is_empty(), "{:?}", c.validate());
     }
 
     #[test]

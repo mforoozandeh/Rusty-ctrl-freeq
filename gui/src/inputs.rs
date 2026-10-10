@@ -6,7 +6,7 @@
 use ctrl_freeq::basis::{basis, basis_names, envelope_names};
 use ctrl_freeq::config::{Config, Coverage, Parameters, ROTATION_AXES, STATE_AXES, Space, Targets, WaveformMode};
 use ctrl_freeq::hamiltonian::model_names;
-use ctrl_freeq::optim::optimizer_names;
+use ctrl_freeq::optim::{OptimizerOptions, optimizer_names};
 use ctrl_freeq::setup::gate_names;
 use eframe::egui::{self, DragValue, RichText, Ui};
 
@@ -456,10 +456,32 @@ fn optimisation(ui: &mut Ui, cfg: &mut Config, platform: Platform) {
             .num_columns(2)
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
-                let o = &mut cfg.optimization;
                 ui.label("Algorithm");
-                string_combo(ui, "algorithm", &mut o.algorithm, optimizer_names());
+                let mut algorithm = cfg.optimization.algorithm.clone();
+                string_combo(ui, "algorithm", &mut algorithm, optimizer_names());
+                if algorithm != cfg.optimization.algorithm {
+                    edit::set_algorithm(cfg, &algorithm);
+                }
                 ui.end_row();
+                if cfg.optimization.algorithm == "dfo-ls" {
+                    ui.label("Initial directions");
+                    ui.horizontal(|ui| {
+                        let options = &mut cfg.optimization.optimizer_options;
+                        let mut reduced = options.as_ref().is_some_and(|o| o.ndirs_initial.is_some());
+                        let hover = "A reduced initial set starts stepping after fewer evaluations and gains \
+                                     points as it explores new directions; at least the parameter count means \
+                                     the full set";
+                        if ui.checkbox(&mut reduced, "reduced").on_hover_text(hover).changed() {
+                            *options = reduced.then_some(OptimizerOptions { ndirs_initial: Some(1) });
+                        }
+                        match options.as_mut().and_then(|o| o.ndirs_initial.as_mut()) {
+                            Some(n) => drop(ui.add(number(n).range(1..=10_000))),
+                            None => drop(ui.label(RichText::new("full set").weak())),
+                        }
+                    });
+                    ui.end_row();
+                }
+                let o = &mut cfg.optimization;
                 ui.label("Iteration limit");
                 ui.add(number(&mut o.max_iter).range(1..=100_000))
                     .on_hover_text("Function evaluations for the derivative-free optimisers");

@@ -106,8 +106,9 @@ fn controls<'a, T: Scalar>(p: &'a Problem, e: &BatchElement, tape: &mut Tape<'a,
     tape.hstack(&cols)
 }
 
-/// The fidelity of one batch element after the whole pulse.
-fn element_fidelity<'a, T: Scalar>(
+/// The state of one batch element after the whole pulse: the evolved columns in Hilbert space, the density matrix
+/// or operator in Liouville space.
+pub(crate) fn element_state<'a, T: Scalar>(
     p: &'a Problem,
     e: &'a BatchElement,
     tape: &mut Tape<'a, T>,
@@ -133,6 +134,18 @@ fn element_fidelity<'a, T: Scalar>(
             }
         };
     }
+    Ok(state)
+}
+
+/// The fidelity of one batch element after the whole pulse.
+fn element_fidelity<'a, T: Scalar>(
+    p: &'a Problem,
+    e: &'a BatchElement,
+    tape: &mut Tape<'a, T>,
+    cx: Var,
+    cy: Var,
+) -> Result<Var> {
+    let state = element_state(p, e, tape, cx, cy)?;
     match &p.evolution {
         Evolution::Hilbert => tape.fidelity(&e.target, state),
         Evolution::Liouville | Evolution::Lindblad(_) => tape.re_trace_product(&e.target, state),

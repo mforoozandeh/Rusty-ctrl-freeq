@@ -12,9 +12,9 @@ use nalgebra::DMatrix;
 
 use crate::autodiff::{Dual, Scalar, Tape, Value};
 use crate::error::{Error, Result};
-use crate::linalg::RMat;
+use crate::linalg::{CMat, RMat};
 use crate::optim::{Eval, Objective};
-use crate::setup::Problem;
+use crate::setup::{Evolution, Problem};
 
 /// A problem's cost, ready to evaluate.
 pub struct CostModel {
@@ -162,6 +162,65 @@ impl CostModel {
         Ok(sym)
     }
 
+    /// The cost at `x` and its residual vector, whose squared norm is `cost + 1`: the least-squares form of the
+    /// objective, for Hilbert-space problems.
+    ///
+    /// A batch element evolving `Ψ` (`D × k`, orthonormal columns) against `T` scores
+    /// `F = (‖M‖² + |s|²)/(k(k+1))` with `M = T†Ψ` and `s = Tr M`, and exactly
+    /// `1 − F = ‖Ψ − T·M‖²/k + ‖M − (s/k)·I‖²/(k+1)`: population leaving the target's span, then the error inside
+    /// it.  Each element contributes both blocks scaled by `1/√B`; the last entry is `max(0, max|a| − 1)`, the
+    /// square root of the amplitude penalty.  Liouville-space evolution has no such form.
+    pub fn residuals(&self, x: &[f64]) -> Result<(Eval, Vec<f64>)> {
+        self.check_len(x.len())?;
+        let p = &self.problem;
+        if !matches!(p.evolution, Evolution::Hilbert) {
+            return Err(Error::NotSupported(
+                "the least-squares form of the objective exists only in Hilbert space, without dissipation".into(),
+            ));
+        }
+        let mut tape: Tape<'_, f64> = Tape::no_grad();
+        let xv = tape.constant(Value::R(RMat::column(x.to_vec())));
+        let w = graph::build_waveforms(p, &mut tape, xv)?;
+        let peak = tape
+            .value(w.amp)
+            .r("residuals")?
+            .data
+            .iter()
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        let excess = (peak - 1.0).max(0.0);
+        let (cx, cy) = (tape.value(w.cx).clone(), tape.value(w.cy).clone());
+        let b = p.batch.len();
+        let scale = 1.0 / (b as f64).sqrt();
+        let elements = self.pool.install(|| {
+            crate::parallel::map(b, |i| -> Result<(f64, Vec<f64>)> {
+                let mut sub: Tape<'_, f64> = Tape::no_grad();
+                let cx = sub.constant(cx.clone());
+                let cy = sub.constant(cy.clone());
+                let state = graph::element_state(p, &p.batch[i], &mut sub, cx, cy)?;
+                element_residual(&p.batch[i].target, sub.value(state).c("residuals")?, scale)
+            })
+        });
+        let mut r = Vec::new();
+        let mut fidelity = 0.0;
+        for element in elements {
+            let (f, part) = element?;
+            fidelity += f;
+            r.extend(part);
+        }
+        fidelity /= b as f64;
+        r.push(excess);
+        if r.iter().any(|v| !v.is_finite()) {
+            return Err(Error::Numerical("the residuals are not finite".into()));
+        }
+        let penalty = excess * excess;
+        let eval = finite(Eval {
+            cost: penalty - fidelity,
+            fidelity,
+            penalty,
+        })?;
+        Ok((eval, r))
+    }
+
     /// The modulated waveforms at `x`.
     pub fn waveforms(&self, x: &[f64]) -> Result<Waveforms> {
         self.check_len(x.len())?;
@@ -240,6 +299,10 @@ impl Objective for CostModel {
     fn hvp(&self, x: &[f64], v: &[f64]) -> Result<Vec<f64>> {
         CostModel::hvp(self, x, v)
     }
+
+    fn residuals(&self, x: &[f64]) -> Result<(Eval, Vec<f64>)> {
+        CostModel::residuals(self, x)
+    }
 }
 
 fn finite(e: Eval) -> Result<Eval> {
@@ -248,6 +311,28 @@ fn finite(e: Eval) -> Result<Eval> {
     } else {
         Err(Error::Numerical("the objective is not finite".into()))
     }
+}
+
+/// One Hilbert batch element: its fidelity, and its two residual blocks `(Ψ − T·M)/√k` and `(M − (s/k)·I)/√(k+1)`
+/// times `scale`, each as real parts then imaginary parts, row-major.
+fn element_residual(target: &CMat<f64>, psi: &CMat<f64>, scale: f64) -> Result<(f64, Vec<f64>)> {
+    let k = target.cols as f64;
+    let m = target.adjoint().matmul(psi)?;
+    let s = m.trace();
+    let leak = psi.sub(&target.matmul(&m)?)?;
+    let mut inside = m.clone();
+    for i in 0..inside.rows {
+        let d = inside.get(i, i) - s / k;
+        inside.set(i, i, d);
+    }
+    let fidelity = (m.data.iter().map(|z| z.norm_sqr()).sum::<f64>() + s.norm_sqr()) / (k * (k + 1.0));
+    let (a, b) = (scale / k.sqrt(), scale / (k + 1.0).sqrt());
+    let mut out = Vec::with_capacity(2 * (leak.data.len() + inside.data.len()));
+    out.extend(leak.data.iter().map(|z| a * z.re));
+    out.extend(leak.data.iter().map(|z| a * z.im));
+    out.extend(inside.data.iter().map(|z| b * z.re));
+    out.extend(inside.data.iter().map(|z| b * z.im));
+    Ok((fidelity, out))
 }
 
 #[cfg(test)]

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `dfo-ls`, a derivative-free Gauss–Newton trust-region optimiser for least squares after Cartis, Fiala, Marteau
+  and Roberts (2019), implemented from the published papers.  It models the residual vector of the fidelity,
+  which for Hilbert-space problems is exact: `1 − F = ‖Ψ − T·M‖²/k + ‖M − (Tr M/k)·I‖²/(k + 1)`, with the
+  amplitude penalty's square root appended.  An optional `optimization.optimizer_options.ndirs_initial` starts it
+  from fewer than `n + 1` points.  Liouville and dissipative problems are refused.
+- `Objective::residuals`, `Derivatives::Residuals`, `Monitor::evaluate_residuals` and `residual_difference`, the
+  least-squares form of an objective and its bookkeeping; `CostModel` implements it.
+- `OptimizerOptions` and `optimizer_with`, for optimiser settings from a configuration; `optimizer` keeps its
+  signature and uses the defaults.
+- An "Initial directions" row in the interface when `dfo-ls` is selected.
 - Three derivative-free optimisers: `nelder-mead`, the downhill simplex method; `spsa`, simultaneous
   perturbation stochastic approximation with step-size calibration and blocking; and `cma-es`, the covariance
   matrix adaptation evolution strategy.  All five derivative-free optimisers now share one box on the

@@ -14,6 +14,7 @@ use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::optim::OptimizerOptions;
 
 /// A complete optimisation problem.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -133,6 +134,9 @@ pub struct Optimization {
     pub max_iter: usize,
     /// Target fidelity; the run stops once fidelity minus penalty reaches it.
     pub targ_fid: f64,
+    /// Settings for the chosen optimiser; only dfo-ls has any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimizer_options: Option<OptimizerOptions>,
 }
 
 /// State space.

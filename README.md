@@ -22,8 +22,9 @@ using exact gradients and Hessians.
 - **Waveforms:** Cartesian, polar, or phase-only over Chebyshev, Legendre, Fourier, polynomial, Hermite,
   Gegenbauer, chirp or random bases.
 - **Optimisers:** gradient-based `l-bfgs`, `newton-cg`, `newton-exact`; derivative-free `cobyla`, `bobyqa`,
-  `nelder-mead`, `spsa`, `cma-es`.  All report progress, can be cancelled and stop at a target fidelity; the
-  stochastic ones take the run's seed, so their runs repeat exactly.
+  `dfo-ls`, `nelder-mead`, `spsa`, `cma-es`.  All report progress, can be cancelled and stop at a target fidelity;
+  the stochastic ones take the run's seed, so their runs repeat exactly.  `dfo-ls` models the residual vector of
+  the fidelity rather than its value, in Hilbert space.
 - **Parallel:** batches and Hessians run on all cores, with bit-for-bit identical results on any thread count.
 - **Reporting:** pulses, state dynamics and excitation profiles for the plots, with a map over offset and Rabi
   frequency when the Rabi frequency is uncertain, the population leaking out of the computational subspace over

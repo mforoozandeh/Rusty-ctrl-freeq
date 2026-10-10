@@ -13,8 +13,8 @@
 
 ## Optimisers
 
-Rust supports `l-bfgs`, `newton-cg`, `newton-exact`, `cobyla`, `bobyqa`, `nelder-mead`, `spsa` and `cma-es`.
-Python offers additional torchmin methods but no `bobyqa` or `cma-es`.
+Rust supports `l-bfgs`, `newton-cg`, `newton-exact`, `cobyla`, `bobyqa`, `dfo-ls`, `nelder-mead`, `spsa` and `cma-es`.
+Python offers additional torchmin methods but no `bobyqa`, `dfo-ls` or `cma-es`.
 
 - **`newton-cg`:** Rust uses Armijo backtracking; Python uses strong Wolfe.
 - **`newton-exact`:** Rust uses a trust region with Steihaug's solver; Python uses a line search.
@@ -36,6 +36,12 @@ Python offers additional torchmin methods but no `bobyqa` or `cma-es`.
   population methods.
 - **`cma-es`:** Hansen's reference defaults for the population, weights, learning rates and damping, with the
   distribution starting spherical at standard deviation `0.5`. Python has no CMA-ES.
+- **`dfo-ls`:** exists in Python only on the research branch, not in 0.4.0, where it wraps the GPL-licensed DFO-LS
+  package. Rust implements the method from the papers. Differences: the derivative-free box; initial and growing
+  directions drawn from the run's seed rather than NumPy's global stream; while the initial set is growing, the
+  missing slope is filled along the part of the residual the model cannot explain; the trust-region step omits
+  TRSBOX's refinement along the sphere; residuals cover state targets and leakage levels as well as gates; and
+  `optimizer_options` keys other than `ndirs_initial` are rejected rather than passed through.
 - **Stochastic runs:** `spsa` and `cma-es` draw from the run's seed, so a configuration with a `seed` repeats
   exactly. Python's Qiskit optimisers have no seed field.
 - **Returned point:** Rust returns the best point evaluated, including line-search trials. Python returns the

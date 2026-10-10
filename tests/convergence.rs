@@ -77,3 +77,37 @@ fn a_gpu_request_runs_on_the_cpu_with_a_notice() {
     let r = run(&cfg, &mut NoProgress).unwrap();
     assert_eq!(r.notices, vec!["GPU is not supported; running on CPU.".to_string()]);
 }
+
+#[test]
+#[cfg_attr(debug_assertions, ignore = "slow in debug builds; run with --release")]
+fn the_two_qubit_cnot_converges_with_dfo_ls() {
+    let mut cfg = example("two_qubit_parameters");
+    cfg.optimization.algorithm = "dfo-ls".into();
+    let r = run(&cfg, &mut NoProgress).unwrap();
+    assert_eq!(
+        r.exit,
+        Exit::TargetReached,
+        "F = {} after {} evaluations",
+        r.fidelity,
+        r.evaluations
+    );
+}
+
+/// Review focus: every Hilbert example, up to four qubits with 64 parameters and 3401 residuals, builds models and
+/// takes steps.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "slow in debug builds; run with --release")]
+fn every_hilbert_example_takes_dfo_ls_steps() {
+    for (name, _) in examples() {
+        let mut cfg = example(name);
+        if cfg.space() != ctrl_freeq::config::Space::Hilbert {
+            continue;
+        }
+        cfg.optimization.algorithm = "dfo-ls".into();
+        let n = ctrl_freeq::setup::Problem::build_with_seed(&cfg, 7).unwrap().n_params();
+        cfg.optimization.max_iter = n + 6;
+        let r = run(&cfg, &mut NoProgress).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(!matches!(r.exit, Exit::Failed(_)), "{name}: {:?}", r.exit);
+        assert!(r.fidelity.is_finite(), "{name}");
+    }
+}

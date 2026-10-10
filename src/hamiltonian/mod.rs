@@ -240,6 +240,7 @@ pub fn default_config(name: &str, n_qubits: usize) -> Result<Config> {
             algorithm: "l-bfgs".into(),
             max_iter: 300,
             targ_fid: 0.999,
+            optimizer_options: None,
         },
     })
 }

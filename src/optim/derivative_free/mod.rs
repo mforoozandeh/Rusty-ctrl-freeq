@@ -1,4 +1,4 @@
-//! Derivative-free optimisers: COBYLA, BOBYQA, Nelder-Mead, SPSA and CMA-ES.
+//! Derivative-free optimisers: COBYLA, BOBYQA, DFO-LS, Nelder-Mead, SPSA and CMA-ES.
 //!
 //! None of them asks the objective for a derivative, all of them count one iteration per function evaluation, as
 //! in the Python package, and all of them keep the parameters inside one box: a solver with no gradient has
@@ -9,11 +9,13 @@
 //! it is set.
 
 mod cma_es;
+mod dfo_ls;
 mod nelder_mead;
 mod powell;
 mod spsa;
 
 pub use cma_es::CmaEs;
+pub use dfo_ls::DfoLs;
 pub use nelder_mead::NelderMead;
 pub use powell::{Bobyqa, Cobyla};
 pub use spsa::Spsa;

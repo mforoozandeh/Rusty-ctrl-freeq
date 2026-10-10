@@ -103,3 +103,94 @@ fn gate_aliases_name_the_same_gate() {
         assert!((got - 0.4).abs() < 1e-12, "{names:?}: {got}");
     }
 }
+
+fn config(name: &str) -> Config {
+    Config::from_json(examples().iter().find(|e| e.0 == name).unwrap().1).unwrap()
+}
+
+/// The two-qubit Duffing transmon fixture: three levels per qubit, so the gate's columns can leak.
+fn duffing() -> Config {
+    let v: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/two_duffing.json")).unwrap();
+    Config::from_json(&v["config"].to_string()).unwrap()
+}
+
+/// `‖r‖² = cost + 1`, the last residual squared is the penalty, and the `Eval` is `value()`'s.
+fn assert_least_squares_form(cfg: &Config, scale: f64) -> Eval {
+    let m = CostModel::new(Problem::build_with_seed(cfg, 3).unwrap());
+    let x: Vec<f64> = m
+        .problem()
+        .x0
+        .iter()
+        .enumerate()
+        .map(|(i, v)| scale * (v + 0.3 * (1.7 * i as f64).sin()))
+        .collect();
+    let (e, r) = m.residuals(&x).unwrap();
+    let want = m.value(&x).unwrap();
+    let norm: f64 = r.iter().map(|v| v * v).sum();
+    assert!(
+        (norm - (e.cost + 1.0)).abs() < 1e-12,
+        "‖r‖² = {norm}, cost + 1 = {}",
+        e.cost + 1.0
+    );
+    assert!((r.last().unwrap().powi(2) - e.penalty).abs() < 1e-12);
+    for (a, b) in [
+        (e.cost, want.cost),
+        (e.fidelity, want.fidelity),
+        (e.penalty, want.penalty),
+    ] {
+        assert!((a - b).abs() < 1e-12, "{e:?} vs {want:?}");
+    }
+    e
+}
+
+#[test]
+fn the_residuals_are_the_cost_in_least_squares_form() {
+    assert_least_squares_form(&config("single_qubit_parameters"), 1.0); // a state target, 100 drift snapshots
+    assert_least_squares_form(&config("single_qubit_parameters_multiple_initial_targ"), 1.0); // several states
+    assert_least_squares_form(&config("single_qubit_parameters_polar_phase"), 1.0);
+    assert_least_squares_form(&config("two_qubit_parameters"), 1.0); // a CNOT
+    assert_least_squares_form(&config("two_qubit_parameters_multiple_initial_targ"), 1.0); // gates per state
+    assert_least_squares_form(&duffing(), 1.0); // a gate with leakage levels
+    let mut rabi = config("single_qubit_parameters");
+    rabi.optimization.h0_snapshots = 5;
+    rabi.optimization.omega_r_snapshots = 3;
+    rabi.parameters.sigma_omega_r_max = vec![0.1];
+    assert_least_squares_form(&rabi, 1.0);
+}
+
+#[test]
+fn the_last_residual_is_the_root_of_the_amplitude_penalty() {
+    let e = assert_least_squares_form(&config("single_qubit_parameters"), 40.0);
+    assert!(e.penalty > 0.0, "the scaled pulse should exceed the limit: {e:?}");
+}
+
+#[test]
+fn liouville_problems_have_no_least_squares_form() {
+    let mut liouville = config("single_qubit_parameters");
+    liouville.optimization.space = crate::config::Space::Liouville;
+    for cfg in [config("single_qubit_dissipative"), liouville] {
+        let m = CostModel::new(Problem::build_with_seed(&cfg, 1).unwrap());
+        let err = m.residuals(&m.problem().x0).unwrap_err();
+        assert!(matches!(err, Error::NotSupported(_)), "{err}");
+    }
+}
+
+/// The identity behind the residuals needs orthonormal columns on both sides.
+#[test]
+fn hilbert_states_and_targets_have_orthonormal_columns() {
+    let mut cfgs: Vec<Config> = examples()
+        .iter()
+        .map(|e| Config::from_json(e.1).unwrap())
+        .filter(|c| c.space() == crate::config::Space::Hilbert)
+        .collect();
+    cfgs.push(duffing());
+    for cfg in cfgs {
+        let p = Problem::build_with_seed(&cfg, 1).unwrap();
+        for e in &p.batch {
+            for m in [&e.initial, &e.target] {
+                let g = m.adjoint().matmul(m).unwrap();
+                assert!(g.max_abs_diff(&crate::linalg::CMat::identity(g.rows)) < 1e-12);
+            }
+        }
+    }
+}

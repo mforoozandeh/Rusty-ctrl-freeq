@@ -1,6 +1,7 @@
 //! Configuration parsing, round trips and validation.
 
-use ctrl_freeq::config::{Config, Targets, examples};
+use ctrl_freeq::config::{Config, Space, Targets, examples};
+use ctrl_freeq::optim::OptimizerOptions;
 
 #[test]
 fn every_bundled_example_parses_validates_and_round_trips() {
@@ -182,4 +183,63 @@ fn band_selective_coverage_needs_a_bandwidth_and_an_order() {
         "{:?}",
         cfg.validate()
     );
+}
+
+/// The first example's JSON with its `optimization` object edited.
+fn with_optimization(edit: impl FnOnce(&mut serde_json::Value)) -> String {
+    let mut v: serde_json::Value = serde_json::from_str(examples()[0].1).unwrap();
+    edit(&mut v["optimization"]);
+    v.to_string()
+}
+
+#[test]
+fn optimizer_options_round_trip() {
+    let json = with_optimization(|o| {
+        o["algorithm"] = "dfo-ls".into();
+        o["optimizer_options"] = serde_json::json!({ "ndirs_initial": 4 });
+    });
+    let c = Config::from_json(&json).unwrap();
+    assert_eq!(
+        c.optimization.optimizer_options,
+        Some(OptimizerOptions { ndirs_initial: Some(4) })
+    );
+    assert!(c.validate().is_empty(), "{:?}", c.validate());
+    assert_eq!(Config::from_json(&c.to_json()).unwrap(), c);
+}
+
+#[test]
+fn unknown_optimizer_options_are_rejected() {
+    let json = with_optimization(|o| {
+        o["algorithm"] = "dfo-ls".into();
+        o["optimizer_options"] = serde_json::json!({ "rhobeg": 0.1 });
+    });
+    let err = Config::from_json(&json).unwrap_err().to_string();
+    assert!(err.contains("rhobeg"), "{err}");
+}
+
+#[test]
+fn dfo_ls_settings_are_validated() {
+    let expect = |cfg: &Config, needle: &str| {
+        let problems = cfg.validate();
+        assert!(
+            problems.iter().any(|p| p.contains(needle)),
+            "wanted \"{needle}\" in {problems:?}"
+        );
+    };
+    let mut c = single_qubit();
+    c.optimization.optimizer_options = Some(OptimizerOptions { ndirs_initial: Some(2) });
+    expect(&c, "optimizer_options apply only to dfo-ls");
+    c.optimization.algorithm = "dfo-ls".into();
+    assert!(c.validate().is_empty(), "{:?}", c.validate());
+    c.optimization.optimizer_options = Some(OptimizerOptions { ndirs_initial: Some(0) });
+    expect(&c, "ndirs_initial must be at least 1");
+
+    let mut c = single_qubit();
+    c.optimization.algorithm = "dfo-ls".into();
+    c.optimization.space = Space::Liouville;
+    expect(&c, "dfo-ls needs the least-squares form");
+
+    let mut c = Config::from_json(examples().iter().find(|e| e.0 == "single_qubit_dissipative").unwrap().1).unwrap();
+    c.optimization.algorithm = "dfo-ls".into();
+    expect(&c, "dfo-ls needs the least-squares form");
 }

@@ -1,7 +1,7 @@
 //! Configuration checks.  Each problem is one sentence naming the field (and qubit, where relevant), so the GUI can
 //! list them all at once.
 
-use super::{Config, Coverage, HAMILTONIAN_TYPES, ROTATION_AXES, STATE_AXES, Targets};
+use super::{Config, Coverage, HAMILTONIAN_TYPES, ROTATION_AXES, STATE_AXES, Space, Targets};
 
 pub(super) fn validate(cfg: &Config) -> Vec<String> {
     let mut v = Checks::default();
@@ -259,6 +259,24 @@ pub(super) fn validate(cfg: &Config) -> Vec<String> {
             o.algorithm,
             names.join(", ")
         ));
+    }
+    if let Some(options) = &o.optimizer_options {
+        if o.algorithm != "dfo-ls" {
+            v.push(format!(
+                "optimizer_options apply only to dfo-ls, not to {}",
+                o.algorithm
+            ));
+        }
+        if options.ndirs_initial == Some(0) {
+            v.push("optimizer_options.ndirs_initial must be at least 1".into());
+        }
+    }
+    if o.algorithm == "dfo-ls" && cfg.space() == Space::Liouville {
+        v.push(
+            "dfo-ls needs the least-squares form of the objective, which exists only in Hilbert space without \
+             dissipation; choose space \"hilbert\" or another algorithm"
+                .into(),
+        );
     }
     if let Some(r) = &cfg.compute_resource {
         if r != "cpu" && r != "gpu" {
